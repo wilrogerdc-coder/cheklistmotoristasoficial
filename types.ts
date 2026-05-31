@@ -75,6 +75,7 @@ export interface UserPermissions {
   checklist: boolean;
   reports: boolean;
   settings: boolean;
+  admin: boolean;
 }
 
 export interface User {
@@ -109,6 +110,31 @@ export interface AppSettings {
   googleSpreadsheetId?: string;
   watermarkUrl?: string;
   settingsPassword?: string;
+  appName?: string;
+  appDescription?: string;
+  developedBy?: string;
+}
+
+export interface AuditLog {
+  id: string;
+  date: string;
+  user: string;
+  action: string;
+  details: string;
+}
+
+export interface Justification {
+  id: string;
+  date: string;
+  type: 'DIARIO' | 'SEMANAL' | 'RETROATIVO';
+  vehicleType: VehicleType;
+  station: string;
+  justification: string;
+  author: string;
+  authorRank: string;
+  createdAt: string;
+  month: string; // ISO month string
+  status: 'PENDING' | 'SIGNED';
 }
 
 export interface LogEntry {

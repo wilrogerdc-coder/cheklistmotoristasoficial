@@ -64,13 +64,23 @@ import { Reports } from './Reports';
 import { VEHICLE_TYPES } from '../constants';
 
 interface AuditUser {
+  id?: string;
+  name?: string;
   username: string;
   password?: string;
+  rank?: string;
+  permissions?: {
+    checklist: boolean;
+    reports: boolean;
+    settings: boolean;
+    admin: boolean;
+  };
   createdAt?: string;
 }
 
 interface SettingsProps {
   settings: AppSettings;
+  currentUser: User | null;
   onSave: (newSettings: AppSettings) => void;
   onClose: () => void;
   initialTab?: 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud';
@@ -85,6 +95,7 @@ interface SettingsProps {
 
 export const Settings: React.FC<SettingsProps> = ({ 
   settings, 
+  currentUser,
   onSave, 
   onClose, 
   initialTab = 'items',
@@ -141,17 +152,58 @@ export const Settings: React.FC<SettingsProps> = ({
   const [loginPassword, setLoginPassword] = useState('');
   
   // Data States
-  const [adminSubTab, setAdminSubTab] = useState<'dashboard' | 'logs' | 'users'>('dashboard');
+  const [adminSubTab, setAdminSubTab] = useState<'dashboard' | 'logs' | 'users' | 'audit'>('dashboard');
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<AuditUser[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [logFilter, setLogFilter] = useState('');
+
+  useEffect(() => {
+    if (activeTab === 'admin' && adminSubTab === 'audit') {
+      fetchAuditLogs();
+    }
+  }, [adminSubTab, activeTab]);
+
+  const fetchAuditLogs = async () => {
+    const rawUrl = localSettings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+    const targetUrl = rawUrl?.trim();
+    if (!targetUrl) return;
+
+    setIsLoadingAudit(true);
+    try {
+      const url = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getAuditLogs&_t=${Date.now()}`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data)) setAuditLogs(data);
+      }
+    } catch (e) {
+      console.error("Erro ao buscar logs de auditoria:", e);
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  };
   
   // User Management Form
-  const [newUser, setNewUser] = useState<AuditUser>({ username: '', password: '' });
+  const [newUser, setNewUser] = useState<AuditUser>({ 
+    username: '', 
+    password: '', 
+    name: '',
+    rank: '',
+    permissions: { 
+      checklist: true, 
+      reports: false, 
+      settings: false,
+      admin: false 
+    } 
+  });
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [isAddingLocalUser, setIsAddingLocalUser] = useState(false);
-  const [localUserForm, setLocalUserForm] = useState({ username: '', password: '', name: '' });
+  const [editingLocalUser, setEditingLocalUser] = useState<User | null>(null);
+  const [localUserForm, setLocalUserForm] = useState({ username: '', password: '', name: '', rank: '' });
   
   const printMirrorRef = useRef<HTMLDivElement>(null);
 
@@ -307,7 +359,7 @@ export const Settings: React.FC<SettingsProps> = ({
 
   const handleSaveUser = async () => {
     if (!newUser.username || !newUser.password) {
-      alert("Preencha Username e Senha para o novo auditor.");
+      alert("Preencha Username e Senha para o usuário.");
       return;
     }
     
@@ -338,7 +390,7 @@ export const Settings: React.FC<SettingsProps> = ({
       if (response && response.type !== 'opaque') {
         const result = await response.json();
         if (result.result === 'success') {
-          alert("Usuário cadastrado com sucesso!");
+          alert(editingUserId ? "Usuário atualizado com sucesso!" : "Usuário cadastrado com sucesso!");
         } else {
           alert(`Erro: ${result.message}`);
         }
@@ -346,7 +398,7 @@ export const Settings: React.FC<SettingsProps> = ({
         alert("Comando enviado ao servidor. Verifique a lista em instantes.");
       }
       
-      setNewUser({ username: '', password: '' });
+      handleCancelUserEdit();
       
       setTimeout(() => {
         fetchUsers();
@@ -358,6 +410,39 @@ export const Settings: React.FC<SettingsProps> = ({
       alert("Erro ao processar solicitação.");
       setIsSavingUser(false);
     }
+  };
+
+  const handleEditUser = (user: AuditUser) => {
+    setNewUser({
+      id: user.id,
+      username: user.username,
+      password: user.password,
+      name: user.name,
+      rank: user.rank,
+      permissions: user.permissions || {
+        checklist: true,
+        reports: false,
+        settings: false,
+        admin: false
+      }
+    });
+    setEditingUserId(user.id || user.username);
+  };
+
+  const handleCancelUserEdit = () => {
+    setNewUser({ 
+      username: '', 
+      password: '', 
+      name: '',
+      rank: '',
+      permissions: { 
+        checklist: true, 
+        reports: false, 
+        settings: false,
+        admin: false 
+      } 
+    });
+    setEditingUserId(null);
   };
 
   const handleDeleteUser = async (username: string) => {
@@ -598,7 +683,8 @@ export const Settings: React.FC<SettingsProps> = ({
       permissions: {
         checklist: true,
         reports: true,
-        settings: false // Por padrão, novos usuários não têm acesso aos ajustes
+        settings: false, // Por padrão, novos usuários não têm acesso aos ajustes
+        admin: false
       }
     };
     
@@ -606,9 +692,45 @@ export const Settings: React.FC<SettingsProps> = ({
       ...localSettings,
       users: [...(localSettings.users || []), newUser]
     });
-    setLocalUserForm({ username: '', password: '', name: '' });
+    setLocalUserForm({ username: '', password: '', name: '', rank: '' });
     setIsAddingLocalUser(false);
     alert('Usuário cadastrado com sucesso! Lembre-se de clicar em "Aplicar Ajustes" para salvar permanentemente.');
+  };
+
+  const handleUpdateLocalUser = () => {
+    if (!editingLocalUser || !localUserForm.username || !localUserForm.password) {
+      alert('Preencha usuário e senha');
+      return;
+    }
+
+    const updatedUsers = (localSettings.users || []).map(u => {
+      if (u.id === editingLocalUser.id) {
+        return {
+          ...u,
+          username: localUserForm.username.toLowerCase(),
+          password: localUserForm.password,
+          name: localUserForm.name || localUserForm.username,
+          rank: localUserForm.rank
+        };
+      }
+      return u;
+    });
+
+    setLocalSettings({ ...localSettings, users: updatedUsers });
+    setEditingLocalUser(null);
+    setLocalUserForm({ username: '', password: '', name: '', rank: '' });
+    alert('Dados do usuário atualizados com sucesso!');
+  };
+
+  const handleStartEditLocalUser = (u: User) => {
+    setEditingLocalUser(u);
+    setLocalUserForm({
+      username: u.username,
+      password: u.password || '',
+      name: u.name,
+      rank: u.rank || ''
+    });
+    setIsAddingLocalUser(true); // Re-use the same form area
   };
 
   const deleteLocalUser = (id: string, username: string) => {
@@ -701,18 +823,29 @@ export const Settings: React.FC<SettingsProps> = ({
       <nav className="flex gap-2 overflow-x-auto pb-2 no-print">
         {[
           { id: 'manual', label: 'Manual', icon: BookOpen },
-          { id: 'stations', label: 'Postos', icon: Navigation },
-          { id: 'vehicles', label: 'Viaturas', icon: Car },
-          { id: 'users', label: 'Usuários', icon: Users },
-          { id: 'items', label: 'Itens', icon: ListChecks },
-          { id: 'images', label: 'Plantas', icon: ImageIcon },
-          { id: 'style', label: 'Estilo', icon: Palette },
-          { id: 'admin', label: 'Auditoria', icon: Lock },
-          { id: 'cloud', label: 'Nuvem', icon: Cloud },
-          { id: 'report_editor', label: 'Editor Relat.', icon: Edit2 },
-          { id: 'reports', label: 'Relatórios', icon: FileText },
+          { id: 'stations', label: 'Postos', icon: Navigation, permission: 'settings' },
+          { id: 'vehicles', label: 'Viaturas', icon: Car, permission: 'settings' },
+          { id: 'users', label: 'Usuários', icon: Users, permission: 'settings' },
+          { id: 'items', label: 'Itens', icon: ListChecks, permission: 'settings' },
+          { id: 'images', label: 'Plantas', icon: ImageIcon, permission: 'settings' },
+          { id: 'style', label: 'Estilo', icon: Palette, permission: 'settings' },
+          { id: 'admin', label: 'Auditoria', icon: Lock, permission: 'admin' },
+          { id: 'cloud', label: 'Nuvem', icon: Cloud, superOnly: true },
+          { id: 'report_editor', label: 'Editor Relat.', icon: Edit2, permission: 'reports' },
+          { id: 'reports', label: 'Relatórios', icon: FileText, permission: 'reports' },
           { id: 'about', label: 'SOBRE', icon: Info }
-        ].map(tab => (
+        ].filter(tab => {
+          if (!tab.permission && !tab.superOnly) return true;
+          // Se não houver usuário logado (Visitante), permitimos ver abas não restritas
+          if (!currentUser) return !tab.superOnly;
+          // Superusuário master
+          if (currentUser.username.toLowerCase() === 'cavalieri') return true;
+          
+          if (tab.superOnly) return false;
+
+          // Verificar permissão específica
+          return (currentUser.permissions as any)[tab.permission!];
+        }).map(tab => (
           <button 
             key={tab.id} 
             onClick={() => handleTabChange(tab.id as any)} 
@@ -965,10 +1098,13 @@ export const Settings: React.FC<SettingsProps> = ({
             {isAddingLocalUser && (
               <div className="bg-blue-50 border border-blue-100 p-6 rounded-3xl space-y-4">
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-black uppercase text-blue-900 flex items-center gap-2"><UserPlus className="w-3.5 h-3.5" /> Cadastro de Novo Usuário</h4>
-                  <button onClick={() => setIsAddingLocalUser(false)} className="text-blue-400 hover:text-blue-600"><X className="w-5 h-5" /></button>
+                  <h4 className="text-xs font-black uppercase text-blue-900 flex items-center gap-2">
+                    {editingLocalUser ? <Edit2 className="w-3.5 h-3.5" /> : <UserPlus className="w-3.5 h-3.5" />}
+                    {editingLocalUser ? 'Editar Usuário' : 'Cadastro de Novo Usuário'}
+                  </h4>
+                  <button onClick={() => { setIsAddingLocalUser(false); setEditingLocalUser(null); }} className="text-blue-400 hover:text-blue-600"><X className="w-5 h-5" /></button>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className="space-y-1">
                     <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Username</label>
                     <input 
@@ -995,13 +1131,28 @@ export const Settings: React.FC<SettingsProps> = ({
                       type="text" 
                       value={localUserForm.name} 
                       onChange={e => setLocalUserForm({...localUserForm, name: e.target.value})} 
-                      placeholder="Ex: Cap PM Cavalieri" 
+                      placeholder="Ex: Cavalieri" 
+                      className="w-full bg-white border rounded-2xl p-3 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" 
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Posto/Grad (RE)</label>
+                    <input 
+                      type="text" 
+                      value={localUserForm.rank} 
+                      onChange={e => setLocalUserForm({...localUserForm, rank: e.target.value})} 
+                      placeholder="Ex: Cb PM 123456" 
                       className="w-full bg-white border rounded-2xl p-3 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" 
                     />
                   </div>
                 </div>
                 <div className="flex justify-end pt-2">
-                  <button onClick={handleAddUser} className="bg-blue-600 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase shadow-lg hover:bg-blue-700 transition-all">Confirmar Cadastro</button>
+                  <button 
+                    onClick={editingLocalUser ? handleUpdateLocalUser : handleAddUser} 
+                    className="bg-blue-600 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase shadow-lg hover:bg-blue-700 transition-all border-b-4 border-blue-800 active:border-b-0 active:translate-y-1"
+                  >
+                    {editingLocalUser ? 'Salvar Alterações' : 'Confirmar Cadastro'}
+                  </button>
                 </div>
               </div>
             )}
@@ -1014,18 +1165,21 @@ export const Settings: React.FC<SettingsProps> = ({
                       {u.username.substring(0, 2).toUpperCase()}
                     </div>
                     <div>
-                      <h4 className="text-xs font-black uppercase text-gray-900">{u.name || u.username}</h4>
+                      <h4 className="text-xs font-black uppercase text-gray-900">
+                        {u.rank ? `${u.rank} ` : ''}{u.name || u.username}
+                      </h4>
                       <p className="text-[10px] font-bold text-gray-400">@ {u.username}</p>
                     </div>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
                     {[
-                      { key: 'checklist', label: 'Checklist', icon: ClipboardCheck },
+                      { id: 'checklist', label: 'Checklist', icon: ClipboardCheck },
                       { id: 'reports', label: 'Relatórios', icon: FileSearch },
-                      { id: 'settings', label: 'Ajustes', icon: ShieldCheck }
+                      { id: 'settings', label: 'Ajustes', icon: ShieldCheck },
+                      { id: 'admin', label: 'Auditoria', icon: Lock }
                     ].map((perm: any) => {
-                      const hasPerm = (u.permissions as any)[perm.key || perm.id];
+                      const hasPerm = (u.permissions as any)[perm.id];
                       return (
                         <button 
                           key={perm.id || perm.key}
@@ -1055,6 +1209,13 @@ export const Settings: React.FC<SettingsProps> = ({
 
                   <div className="flex gap-2">
                     <button 
+                      onClick={() => handleStartEditLocalUser(u)}
+                      className="p-2 hover:bg-blue-50 rounded-xl text-blue-400 transition-colors"
+                      title="Editar Usuário"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button 
                       onClick={() => {
                         const newPass = prompt('Nova senha:', u.password);
                         if (newPass) {
@@ -1065,7 +1226,7 @@ export const Settings: React.FC<SettingsProps> = ({
                         }
                       }}
                       className="p-2 hover:bg-gray-200 rounded-xl text-gray-400 transition-colors"
-                      title="Alterar Senha"
+                      title="Alterar Senha Rápido"
                     >
                       <Key className="w-4 h-4" />
                     </button>
@@ -1213,6 +1374,7 @@ export const Settings: React.FC<SettingsProps> = ({
                 <div className="flex items-center justify-between border-b pb-2">
                    <div className="flex items-center gap-2 overflow-x-auto">
                      <button onClick={() => setAdminSubTab('dashboard')} className={`text-[10px] font-black uppercase px-4 py-2 rounded-lg transition-all ${adminSubTab === 'dashboard' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}>Dashboard Gerencial</button>
+                     <button onClick={() => setAdminSubTab('audit')} className={`text-[10px] font-black uppercase px-4 py-2 rounded-lg transition-all ${adminSubTab === 'audit' ? 'bg-purple-600 text-white shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}>Ações do Sistema</button>
                      {currentAuditUser === 'CAVALIERI' && (
                        <button onClick={() => setAdminSubTab('users')} className={`text-[10px] font-black uppercase px-4 py-2 rounded-lg transition-all ${adminSubTab === 'users' ? 'bg-red-600 text-white shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}>Gestão de Acesso</button>
                      )}
@@ -1288,68 +1450,6 @@ export const Settings: React.FC<SettingsProps> = ({
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6">
-                       <div className="bg-white border rounded-3xl p-6 space-y-4 shadow-sm">
-                          <div className="flex items-center gap-2 mb-2">
-                             <Database className="w-4 h-4 text-purple-600" />
-                             <h4 className="text-xs font-black uppercase text-gray-800">Manutenção do Banco</h4>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <button 
-                              onClick={() => {
-                                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(localSettings, null, 2));
-                                const downloadAnchorNode = document.createElement('a');
-                                downloadAnchorNode.setAttribute("href", dataStr);
-                                downloadAnchorNode.setAttribute("download", `checkviatura_backup_${new Date().toISOString().split('T')[0]}.json`);
-                                document.body.appendChild(downloadAnchorNode);
-                                downloadAnchorNode.click();
-                                downloadAnchorNode.remove();
-                              }}
-                              className="flex items-center justify-center gap-2 p-4 bg-purple-50 text-purple-700 rounded-2xl hover:bg-purple-100 transition-all active:scale-95 border border-purple-100"
-                            >
-                              <Download className="w-5 h-5" />
-                              <div className="text-left">
-                                <p className="text-[10px] font-black uppercase leading-tight">Exportar</p>
-                                <p className="text-[8px] font-bold opacity-70 uppercase leading-tight">Backup Local</p>
-                              </div>
-                            </button>
-                            
-                            <label className="flex items-center justify-center gap-2 p-4 bg-amber-50 text-amber-700 rounded-2xl hover:bg-amber-100 transition-all active:scale-95 border border-amber-100 cursor-pointer">
-                              <Upload className="w-5 h-5" />
-                              <div className="text-left">
-                                <p className="text-[10px] font-black uppercase leading-tight">Importar</p>
-                                <p className="text-[8px] font-bold opacity-70 uppercase leading-tight">Restaurar JSON</p>
-                              </div>
-                              <input 
-                                type="file" 
-                                className="hidden" 
-                                accept=".json" 
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (!file) return;
-                                  const reader = new FileReader();
-                                  reader.onload = (event) => {
-                                    try {
-                                      const json = JSON.parse(event.target?.result as string);
-                                      if (json.vehicles || json.users) {
-                                        setLocalSettings(json);
-                                        alert("BANCO DE DADOS IMPORTADO COM SUCESSO!\nClique em 'APLICAR AJUSTES' para salvar as alterações.");
-                                      } else {
-                                        alert("ERRO: O arquivo não parece ser um backup válido do CheckViatura.");
-                                      }
-                                    } catch (err) {
-                                      alert("ERRO AO LER ARQUIVO: " + err);
-                                    }
-                                  };
-                                  reader.readAsText(file);
-                                }}
-                              />
-                            </label>
-                          </div>
-                          <p className="text-[9px] font-bold text-gray-400 uppercase text-center leading-relaxed">
-                            Cuidado: Ao importar, todos os veículos, postos e usuários atuais serão substituídos pelos do arquivo.
-                          </p>
-                       </div>
-
                        <div className="bg-gray-50 border rounded-3xl p-6">
                           <div className="flex items-center gap-2 mb-4">
                              <Users className="w-4 h-4 text-blue-600" />
@@ -1393,6 +1493,40 @@ export const Settings: React.FC<SettingsProps> = ({
                   </div>
                 )}
 
+                {adminSubTab === 'audit' && (
+                  <div className="flex-1 overflow-hidden flex flex-col pt-4">
+                    <div className="flex items-center justify-between mb-4 px-2">
+                       <h4 className="text-xs font-black uppercase text-gray-500">Log de Auditoria de Ações</h4>
+                       <button onClick={fetchAuditLogs} className="text-blue-600 hover:underline text-[10px] font-black uppercase">Atualizar Logs</button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto border rounded-2xl bg-gray-50 divide-y">
+                      {isLoadingAudit && <div className="p-10 text-center"><RefreshCw className="w-8 h-8 animate-spin mx-auto text-blue-600" /></div>}
+                      {!isLoadingAudit && auditLogs.length === 0 && <div className="p-10 text-center text-[10px] font-black text-gray-400 uppercase">Nenhum log de auditoria encontrado.</div>}
+                      {auditLogs.map((log, idx) => (
+                        <div key={log.id || idx} className="p-3 hover:bg-white transition-colors cursor-default">
+                           <div className="flex items-center justify-between gap-4">
+                              <div className="flex items-center gap-3">
+                                 <div className={`p-2 rounded-lg ${
+                                   log.action === 'LOGIN' ? 'bg-green-100 text-green-700' :
+                                   log.action === 'LOGOUT' ? 'bg-gray-100 text-gray-700' :
+                                   log.action === 'ALTERACAO_CONFIGURACOES' ? 'bg-purple-100 text-purple-700' :
+                                   'bg-blue-100 text-blue-700'
+                                 }`}>
+                                    <Activity className="w-3.5 h-3.5" />
+                                 </div>
+                                 <div>
+                                    <p className="text-[11px] font-black uppercase text-gray-900">{log.action}</p>
+                                    <p className="text-[9px] font-bold text-gray-500">{log.user} | {log.date}</p>
+                                 </div>
+                              </div>
+                              <p className="text-[10px] font-medium text-gray-600 flex-1 text-right max-w-md italic">{log.details}</p>
+                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {adminSubTab === 'users' && currentAuditUser === 'CAVALIERI' && (
                   <div className="flex-1 flex flex-col gap-6 pt-4 overflow-hidden">
                     <div className="bg-red-50 p-6 rounded-3xl border border-red-100 flex items-start gap-4">
@@ -1409,21 +1543,63 @@ export const Settings: React.FC<SettingsProps> = ({
                        <div className="bg-white border rounded-3xl p-6 space-y-4">
                           <div className="flex items-center gap-2 mb-2">
                              <UserPlus className="w-4 h-4 text-blue-600" />
-                             <h4 className="text-xs font-black uppercase text-gray-800">Novo Auditor</h4>
+                             <h4 className="text-xs font-black uppercase text-gray-800">{editingUserId ? 'Editar Usuário' : 'Novo Usuário / Auditor'}</h4>
                           </div>
                           <div className="space-y-3">
-                             <div className="space-y-1">
-                                <label className="text-[9px] font-black text-gray-400 uppercase">Username</label>
-                                <input type="text" placeholder="Ex: Auditor01" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} className="w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500" />
+                             <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                   <label className="text-[9px] font-black text-gray-400 uppercase">Nome Completo</label>
+                                   <input type="text" placeholder="Ex: Cb PM Cavalieri" value={newUser.name || ''} onChange={e => setNewUser({...newUser, name: e.target.value})} className="w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500 bg-white" />
+                                </div>
+                                <div className="space-y-1">
+                                   <label className="text-[9px] font-black text-gray-400 uppercase">P/Grad (RE)</label>
+                                   <input type="text" placeholder="Ex: Cb PM 123456" value={newUser.rank || ''} onChange={e => setNewUser({...newUser, rank: e.target.value})} className="w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500 bg-white" />
+                                </div>
                              </div>
-                             <div className="space-y-1">
-                                <label className="text-[9px] font-black text-gray-400 uppercase">Senha de Acesso</label>
-                                <input type="password" placeholder="••••••••" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} className="w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500" />
+                             <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                   <label className="text-[9px] font-black text-gray-400 uppercase">Username</label>
+                                   <input type="text" placeholder="Ex: Auditor01" disabled={!!editingUserId} value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} className={`w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500 ${editingUserId ? 'bg-gray-100 text-gray-500' : 'bg-white'}`} />
+                                </div>
+                                <div className="space-y-1">
+                                   <label className="text-[9px] font-black text-gray-400 uppercase">Senha de Acesso</label>
+                                   <input type="password" placeholder="••••••••" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} className="w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500" />
+                                </div>
                              </div>
-                             <button onClick={handleSaveUser} disabled={isSavingUser} className="w-full bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg flex items-center justify-center gap-2 transition-all">
-                                {isSavingUser ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                                Salvar Credenciais
-                             </button>
+
+                             <div className="space-y-2 pt-2 border-t mt-2">
+                                <label className="text-[9px] font-black text-gray-400 uppercase">Permissões de Acesso (Telas)</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                   <label className="flex items-center gap-2 p-3 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                                      <input type="checkbox" checked={newUser.permissions?.checklist} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, checklist: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Checklist</span>
+                                   </label>
+                                   <label className="flex items-center gap-2 p-3 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                                      <input type="checkbox" checked={newUser.permissions?.reports} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, reports: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Relatórios</span>
+                                   </label>
+                                   <label className="flex items-center gap-2 p-3 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                                      <input type="checkbox" checked={newUser.permissions?.settings} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, settings: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Ajustes</span>
+                                   </label>
+                                   <label className="flex items-center gap-2 p-3 border-2 border-red-100 bg-red-50 rounded-xl cursor-pointer hover:bg-red-100 transition-colors">
+                                      <input type="checkbox" checked={newUser.permissions?.admin} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, admin: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500" />
+                                      <span className="text-[10px] font-black uppercase text-red-600">Auditoria</span>
+                                   </label>
+                                </div>
+                             </div>
+
+                             <div className="flex gap-2">
+                                <button onClick={handleSaveUser} disabled={isSavingUser} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg flex items-center justify-center gap-2 transition-all">
+                                   {isSavingUser ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                                   {editingUserId ? 'Atualizar Dados' : 'Salvar Credenciais'}
+                                </button>
+                                {editingUserId && (
+                                   <button onClick={handleCancelUserEdit} className="bg-gray-100 hover:bg-gray-200 text-gray-600 p-4 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all">
+                                      Cancelar
+                                   </button>
+                                )}
+                             </div>
                           </div>
                        </div>
 
@@ -1442,13 +1618,24 @@ export const Settings: React.FC<SettingsProps> = ({
                                         {u.username.substring(0,1).toUpperCase()}
                                      </div>
                                      <div>
-                                        <p className="text-[11px] font-black text-gray-800 uppercase">{u.username}</p>
-                                        <p className="text-[9px] font-bold text-gray-400 uppercase">Acesso Autorizado</p>
+                                        <p className="text-[11px] font-black text-gray-800 uppercase">{u.name || u.username}</p>
+                                        <div className="flex flex-wrap gap-1 mt-1">
+                                            <span className="text-[7px] font-black px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded uppercase">{u.rank || 'S/ GRAD'}</span>
+                                            {u.permissions?.checklist && <span className="text-[7px] font-black px-1.5 py-0.5 bg-green-100 text-green-600 rounded uppercase">Checklist</span>}
+                                            {u.permissions?.reports && <span className="text-[7px] font-black px-1.5 py-0.5 bg-purple-100 text-purple-600 rounded uppercase">Relatórios</span>}
+                                            {u.permissions?.settings && <span className="text-[7px] font-black px-1.5 py-0.5 bg-blue-100 text-blue-600 rounded uppercase">Ajustes</span>}
+                                            {u.permissions?.admin && <span className="text-[7px] font-black px-1.5 py-0.5 bg-red-100 text-red-600 rounded uppercase">Auditoria</span>}
+                                         </div>
                                      </div>
                                   </div>
-                                  <button onClick={() => handleDeleteUser(u.username)} className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100">
-                                     <Trash2 className="w-4 h-4" />
-                                  </button>
+                                  <div className="flex gap-1">
+                                     <button onClick={() => handleEditUser(u)} className="p-2 text-gray-300 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all opacity-0 group-hover:opacity-100">
+                                        <Edit2 className="w-4 h-4" />
+                                     </button>
+                                     <button onClick={() => handleDeleteUser(u.username)} className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100">
+                                        <Trash2 className="w-4 h-4" />
+                                     </button>
+                                  </div>
                                </div>
                                ) : null
                              ))}
@@ -1500,6 +1687,70 @@ export const Settings: React.FC<SettingsProps> = ({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div className="space-y-6">
+                {(currentUser?.username.toLowerCase() === 'cavalieri' || !currentUser) && (
+                  <div className="p-8 bg-purple-50 rounded-3xl border border-purple-100 space-y-6">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Database className="w-5 h-5 text-purple-600" />
+                      <h4 className="text-xs font-black uppercase text-purple-900">Backup e Manutenção do Banco</h4>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <button 
+                        onClick={() => {
+                          const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(localSettings, null, 2));
+                          const downloadAnchorNode = document.createElement('a');
+                          downloadAnchorNode.setAttribute("href", dataStr);
+                          downloadAnchorNode.setAttribute("download", `checkviatura_backup_${new Date().toISOString().split('T')[0]}.json`);
+                          document.body.appendChild(downloadAnchorNode);
+                          downloadAnchorNode.click();
+                          downloadAnchorNode.remove();
+                        }}
+                        className="flex items-center justify-center gap-2 p-4 bg-white text-purple-700 rounded-2xl hover:bg-purple-100 transition-all active:scale-95 border border-purple-200 shadow-sm"
+                      >
+                        <Download className="w-5 h-5" />
+                        <div className="text-left">
+                          <p className="text-[10px] font-black uppercase leading-tight">Exportar</p>
+                          <p className="text-[8px] font-bold opacity-70 uppercase leading-tight">Backup Local</p>
+                        </div>
+                      </button>
+                      
+                      <label className="flex items-center justify-center gap-2 p-4 bg-white text-amber-700 rounded-2xl hover:bg-amber-100 transition-all active:scale-95 border border-amber-200 shadow-sm cursor-pointer">
+                        <Upload className="w-5 h-5" />
+                        <div className="text-left">
+                          <p className="text-[10px] font-black uppercase leading-tight">Importar</p>
+                          <p className="text-[8px] font-bold opacity-70 uppercase leading-tight">Restaurar JSON</p>
+                        </div>
+                        <input 
+                          type="file" 
+                          className="hidden" 
+                          accept=".json" 
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            const reader = new FileReader();
+                            reader.onload = (event) => {
+                              try {
+                                const json = JSON.parse(event.target?.result as string);
+                                if (json.vehicles || json.users) {
+                                  setLocalSettings(json);
+                                  alert("BANCO DE DADOS IMPORTADO COM SUCESSO!\nClique em 'APLICAR AJUSTES' para salvar as alterações.");
+                                } else {
+                                  alert("ERRO: O arquivo não parece ser um backup válido do CheckViatura.");
+                                }
+                              } catch (err) {
+                                alert("ERRO AO LER ARQUIVO: " + err);
+                              }
+                            };
+                            reader.readAsText(file);
+                          }}
+                        />
+                      </label>
+                    </div>
+                    <p className="text-[9px] font-bold text-purple-400 uppercase text-center leading-relaxed">
+                      Cuidado: Ao importar, todos os veículos, postos e usuários atuais serão substituídos pelos do arquivo.
+                    </p>
+                  </div>
+                )}
+
                 <div className="p-8 bg-white rounded-3xl border border-gray-100 shadow-sm space-y-6">
                   <div className="space-y-4">
                     <h4 className="text-xs font-black uppercase text-gray-400 tracking-widest">Banco de Dados Principal (Apps Script)</h4>
@@ -1741,6 +1992,7 @@ export const Settings: React.FC<SettingsProps> = ({
             <Reports 
               logs={logs} 
               settings={localSettings} 
+              currentUser={currentUser}
               onFetch={fetchLogs}
               isLoading={isLoadingLogs}
             />
@@ -1748,20 +2000,55 @@ export const Settings: React.FC<SettingsProps> = ({
         )}
 
         {activeTab === 'about' && (
-          <div className="p-12 flex flex-col items-center justify-center text-center space-y-4">
+          <div className="p-12 flex flex-col items-center justify-center space-y-6">
             <div className="w-24 h-24 bg-blue-600 rounded-[2.5rem] flex items-center justify-center shadow-2xl shadow-blue-200">
               <ClipboardCheck className="w-12 h-12 text-white" />
             </div>
-            <h3 className="text-3xl font-black text-gray-900 uppercase">CHECKLIST VIATURA</h3>
-            <p className="text-xs font-bold text-gray-400 uppercase tracking-[0.3em]">Versão 3.7.0 Auditoria</p>
-            <div className="max-w-md bg-gray-50 p-6 rounded-3xl border border-gray-100">
-              <p className="text-[11px] text-gray-500 font-medium leading-relaxed">
-                Desenvolvido para gestão técnica de frotas de emergência e operacionais. 
-                Sistema resiliente de auditoria com reconstrução dinâmica de relatórios espelho e controle de acessos multinível.
-              </p>
+            
+            <div className="w-full max-w-md space-y-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Nome do Sistema</label>
+                <input 
+                  type="text" 
+                  value={localSettings.appName || 'CHECKLIST VIATURA'} 
+                  onChange={e => setLocalSettings({...localSettings, appName: e.target.value})} 
+                  placeholder="NOME DO SISTEMA"
+                  readOnly={currentUser?.username.toLowerCase() !== 'cavalieri'}
+                  className={`w-full border-2 rounded-2xl p-4 text-center text-xl font-black uppercase outline-none transition-all ${currentUser?.username.toLowerCase() !== 'cavalieri' ? 'bg-gray-50 border-gray-100 text-gray-400' : 'focus:border-blue-500'}`}
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Descrição do Sistema</label>
+                <textarea 
+                  value={localSettings.appDescription || 'Desenvolvido para gestão técnica de frotas de emergência e operacionais. Sistema resiliente de auditoria com reconstrução dinâmica de relatórios espelho e controle de acessos multinível.'} 
+                  onChange={e => setLocalSettings({...localSettings, appDescription: e.target.value})} 
+                  placeholder="DESCRIÇÃO DO SISTEMA"
+                  rows={4}
+                  readOnly={currentUser?.username.toLowerCase() !== 'cavalieri'}
+                  className={`w-full border-2 rounded-2xl p-4 text-[11px] font-medium leading-relaxed outline-none transition-all resize-none ${currentUser?.username.toLowerCase() !== 'cavalieri' ? 'bg-gray-50 border-gray-100 text-gray-300' : 'text-gray-500 focus:border-blue-500'}`}
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Desenvolvido por</label>
+                <input 
+                  type="text" 
+                  value={localSettings.developedBy || 'Equipe de Gestão de Frotas'} 
+                  onChange={e => setLocalSettings({...localSettings, developedBy: e.target.value})} 
+                  placeholder="DESENVOLVEDOR"
+                  readOnly={currentUser?.username.toLowerCase() !== 'cavalieri'}
+                  className={`w-full border-2 rounded-2xl p-4 text-center text-[10px] font-black uppercase outline-none transition-all ${currentUser?.username.toLowerCase() !== 'cavalieri' ? 'bg-gray-50 border-gray-100 text-gray-300' : 'text-blue-600 focus:border-blue-500'}`}
+                />
+              </div>
             </div>
-            <div className="pt-8 border-t w-full max-w-xs border-gray-100">
-               <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.2em]">Desenvolvido por CAVALIERI</p>
+
+            <p className="text-xs font-bold text-gray-400 uppercase tracking-[0.3em]">Versão 3.8.0 Auditoria</p>
+            
+            <div className="bg-blue-50 border border-blue-100 p-4 rounded-2xl max-w-sm">
+              <p className="text-[10px] text-blue-800 font-bold text-center leading-relaxed">
+                As alterações realizadas aqui serão refletidas em todo o sistema após você clicar em "Aplicar Ajustes".
+              </p>
             </div>
           </div>
         )}

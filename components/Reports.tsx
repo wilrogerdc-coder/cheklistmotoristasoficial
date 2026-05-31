@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { LogEntry, AppSettings } from '../types';
+import { Justification, LogEntry, AppSettings, User } from '../types';
 import { Header } from './Header';
 import { Footer } from './Footer';
 import { 
@@ -20,7 +20,10 @@ import {
   X,
   Eye,
   Clock,
-  Loader2
+  Loader2,
+  CheckCircle,
+  Lock,
+  ShieldCheck
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -28,17 +31,134 @@ import html2canvas from 'html2canvas';
 interface ReportsProps {
   logs: LogEntry[];
   settings: AppSettings;
+  currentUser: User | null;
   onFetch: (prefix?: string, month?: string) => Promise<void>;
   isLoading?: boolean;
 }
 
 type ReportType = 'novelties' | 'synthetic' | 'analytical' | 'full' | 'monthly_grouped' | 'history' | 'daily_control' | 'daily_control_motos' | 'weekly_leves' | 'weekly_motos' | 'weekly_ab' | null;
 
-export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoading }) => {
+export const Reports: React.FC<ReportsProps> = ({ logs, settings, currentUser, onFetch, isLoading }) => {
   const [activeReport, setActiveReport] = useState<ReportType>(null);
   const [monthFilter, setMonthFilter] = useState<string>(''); // Vazio por padrão para mostrar tudo
+  const [monthClosures, setMonthClosures] = useState<any[]>([]);
+  const [isClosingMonth, setIsClosingMonth] = useState(false);
+  const [showClosureModal, setShowClosureModal] = useState(false);
+  const [closureAuth, setClosureAuth] = useState({ username: '', password: '' });
+
+  const fetchMonthClosures = async () => {
+    const rawUrl = settings.googleSheetUrl;
+    if (!rawUrl) return;
+    try {
+      const url = `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=getAuditLogs&_t=${Date.now()}`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          setMonthClosures(data.filter((l: any) => l.action === 'FECHAMENTO_MENSAL'));
+        }
+      }
+    } catch (e) {}
+  };
   const [selectedPrefixes, setSelectedPrefixes] = useState<Set<string>>(new Set());
   const [prefixSearch, setPrefixSearch] = useState<string>('');
+  const [justifications, setJustifications] = useState<Justification[]>([]);
+  const [isFetchingJustifications, setIsFetchingJustifications] = useState(false);
+  const [showJustificationModal, setShowJustificationModal] = useState(false);
+  const [newJustification, setNewJustification] = useState({ 
+    date: '', 
+    justification: '',
+    author: '',
+    authorRank: ''
+  });
+
+  useEffect(() => {
+    if (showJustificationModal && currentUser) {
+      setNewJustification(prev => ({
+        ...prev,
+        author: prev.author || currentUser.name || currentUser.username,
+        authorRank: prev.authorRank || currentUser.rank || ''
+      }));
+    }
+  }, [showJustificationModal, currentUser]);
+  
+  const fetchJustifications = async () => {
+    const rawUrl = settings.googleSheetUrl;
+    if (!rawUrl) return;
+    setIsFetchingJustifications(true);
+    try {
+      const url = `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=getJustifications&_t=${Date.now()}`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data)) setJustifications(data);
+      }
+    } catch (e) {
+      console.error("Erro ao buscar justificativas:", e);
+    } finally {
+      setIsFetchingJustifications(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeReport && monthFilter && selectedPrefixes.size > 0) {
+      fetchMonthClosures();
+    }
+  }, [activeReport, monthFilter, selectedPrefixes]);
+
+  const handleMonthClosure = async () => {
+    if (!closureAuth.username || !closureAuth.password) {
+      alert("Informe usuário e senha para assinar o fechamento.");
+      return;
+    }
+
+    setIsClosingMonth(true);
+    const rawUrl = settings.googleSheetUrl;
+    if (!rawUrl) return;
+
+    try {
+      // Validar usuário
+      const usersResp = await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=getUsers`);
+      const users = await usersResp.json();
+      const user = users.find((u: any) => 
+        u.username.toLowerCase() === closureAuth.username.toLowerCase() && 
+        u.password.toString() === closureAuth.password
+      );
+
+      if (!user) {
+        alert("Credenciais inválidas.");
+        setIsClosingMonth(false);
+        return;
+      }
+
+      // Salvar log de fechamento
+      const prefix = Array.from(selectedPrefixes)[0];
+      const closureData = {
+        action: 'saveAuditLog',
+        date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
+        user: `${user.rank || ''} ${user.name || user.username}`.trim(),
+        actionLog: 'FECHAMENTO_MENSAL',
+        details: `FECHAMENTO MENSAL: ${monthFilter} | VTR: ${prefix} | ASSINADO POR: ${user.rank} ${user.name}`
+      };
+
+      await fetch(rawUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(closureData)
+      });
+
+      alert("Mês encerrado com sucesso!");
+      setShowClosureModal(false);
+      setClosureAuth({ username: '', password: '' });
+      fetchMonthClosures();
+    } catch (e) {
+      alert("Erro ao encerrar mês.");
+      console.error(e);
+    } finally {
+      setIsClosingMonth(false);
+    }
+  };
 
   // Carregamento inicial automático ao abrir a aba de relatórios
   React.useEffect(() => {
@@ -68,6 +188,51 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
   const reportRef = useRef<HTMLDivElement>(null);
 
   const normalizePrefix = (p: any) => String(p || '').replace(/[-\s]/g, '').toUpperCase();
+
+  const getItemStatusFromLog = (log: LogEntry, itemLabel: string): { val: string, colorClass: string } => {
+    let val = '';
+    let colorClass = '';
+    
+    if (log.vehicleStatus === 'BAIXADA') {
+      return { val: 'BX', colorClass: 'text-red-600' };
+    } else if (log.vehicleStatus === 'RESERVA') {
+      return { val: 'RS', colorClass: 'text-orange-600' };
+    }
+
+    let details: any[] = [];
+    try {
+      if (log.itemsDetail) {
+        details = JSON.parse(log.itemsDetail);
+      } else {
+        const full = getFullData(log);
+        if (full && Array.isArray(full.items)) {
+          details = full.items;
+        } else if (full && typeof full === 'object') {
+           // Em alguns logs antigos pode estar em uma estrutura diferente
+           const possibleItems = full.checklistItems || full.InspectionItems || [];
+           if (Array.isArray(possibleItems)) details = possibleItems;
+        }
+      }
+    } catch (e) {}
+
+    if (details.length > 0) {
+      const item = details.find((det: any) => {
+        const label = det.label || det.description || '';
+        return label.trim().toLowerCase() === itemLabel.trim().toLowerCase();
+      });
+      if (item) {
+        const status = item.status;
+        if (status === 'SN' || status === 'OK' || status === 'S') {
+          val = 'OK';
+        } else if (status === 'CN' || status === 'N') {
+          val = 'CN';
+          colorClass = 'text-red-700 bg-red-50';
+        }
+      }
+    }
+    
+    return { val, colorClass };
+  };
 
   const getFullData = (log: LogEntry): any => {
     const rawData = log.fullData || (log as any).fulldata;
@@ -376,7 +541,12 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
     
     const [year, month] = monthFilter.split('-').map(Number);
     const daysInMonth = new Date(year, month, 0).getDate();
-    const days = Array.from({ length: 31 }, (_, i) => i + 1);
+    const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+
+    const getDayColor = (d: number) => {
+      const colors = ['bg-[#4ade80]', 'bg-[#facc15]', 'bg-[#60a5fa]'];
+      return colors[(d - 1) % 3];
+    };
 
     const logsByDay: Record<number, LogEntry> = {};
     filteredLogs.forEach(log => {
@@ -411,253 +581,318 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
     });
 
     return (
-      <div className="space-y-1 mx-auto print:p-0 print:m-0 relative" style={{ maxWidth: '297mm' }}>
-        <style>{`
-          @media print {
-            @page { size: landscape; margin: 5mm; }
-            body { 
-              -webkit-print-color-adjust: exact; 
-              counter-reset: page;
+      <>
+        <div className="space-y-1 mx-auto print:p-0 print:m-0 relative" style={{ maxWidth: '297mm' }}>
+          <style>{`
+            @media print {
+              @page { size: landscape; margin: 5mm; }
+              body { 
+                -webkit-print-color-adjust: exact; 
+                counter-reset: page;
+              }
+              .page-footer {
+                position: fixed;
+                bottom: 0;
+                width: 100%;
+              }
+              .page-number:after {
+                counter-increment: page;
+                content: counter(page);
+              }
             }
-            .page-footer {
-              position: fixed;
-              bottom: 0;
-              width: 100%;
+            .vertical-text {
+              writing-mode: vertical-rl;
+              transform: rotate(180deg);
+              white-space: nowrap;
             }
-            .page-number:after {
-              counter-increment: page;
-              content: counter(page);
+            .ficha-table th, .ficha-table td {
+               border: 1px solid black !important;
+               padding: 1px !important;
+               line-height: 1 !important;
             }
-          }
-          .vertical-text {
-            writing-mode: vertical-rl;
-            transform: rotate(180deg);
-            white-space: nowrap;
-          }
-          .ficha-table th, .ficha-table td {
-             border: 1px solid black !important;
-             padding: 1px !important;
-             line-height: 1 !important;
-          }
-        `}</style>
+          `}</style>
 
-        {/* Top Header conforming to image */}
-        <div className="flex items-stretch border border-black overflow-hidden bg-white mb-0.5">
-           <div className="w-24 border-r border-black p-1 flex items-center justify-center bg-white">
-              {settings.headerLogoUrl1 && <img src={settings.headerLogoUrl1} className="h-12 object-contain" alt="Logo 1" />}
-           </div>
-           <div className="flex-1 bg-[#00e5ff] text-center flex flex-col items-center justify-center py-1">
-              <h1 className="text-[11px] font-black uppercase leading-tight">
-                 {settings.reportTitle || "Ficha de Controle do Check List Diário de Viaturas Leves e Pesadas"}
-              </h1>
-           </div>
-           <div className="w-24 border-l border-black p-1 flex items-center justify-center bg-white">
-              {settings.headerLogoUrl2 ? (
-                <img src={settings.headerLogoUrl2} className="h-12 object-contain" alt="Logo 2" />
-              ) : (
-                <span className="text-[6px] font-black uppercase text-center text-gray-300">LOGO 2</span>
-              )}
-           </div>
-        </div>
+          {/* Top Header conforming to image */}
+          <div className="flex items-stretch border border-black overflow-hidden bg-white mb-0.5">
+             <div className="w-24 border-r border-black p-1 flex items-center justify-center bg-white">
+                {settings.headerLogoUrl1 && <img src={settings.headerLogoUrl1} className="h-12 object-contain" alt="Logo 1" />}
+             </div>
+             <div className="flex-1 bg-[#00e5ff] text-center flex flex-col items-center justify-center py-1">
+                <h1 className="text-[11px] font-black uppercase leading-tight">
+                   {settings.reportTitle || "Ficha de Controle do Check List Diário de Viaturas Leves e Pesadas"}
+                </h1>
+             </div>
+             <div className="w-24 border-l border-black p-1 flex items-center justify-center bg-white">
+                {settings.headerLogoUrl2 ? (
+                  <img src={settings.headerLogoUrl2} className="h-12 object-contain" alt="Logo 2" />
+                ) : (
+                  <span className="text-[6px] font-black uppercase text-center text-gray-300">LOGO 2</span>
+                )}
+             </div>
+          </div>
 
-        <div className="grid grid-cols-5 border border-black text-[8px] font-black uppercase bg-white">
-           <div className="border-r border-black px-1 py-0.5">Prefixo da VTR: <span className="ml-1 text-[9px]">{selectedPrefix}</span></div>
-           <div className="border-r border-black px-1 py-0.5">Posto: <span className="ml-1 text-[9px]">{vehicle?.station}</span></div>
-           <div className="border-r border-black px-1 py-0.5">GB: <span className="ml-1 text-[9px]">{vehicle?.gb}</span></div>
-           <div className="border-r border-black px-1 py-0.5 text-center">Mês: <span className="ml-1 text-[9px]">{getMonthLabel(monthFilter).toUpperCase()}</span></div>
-           <div className="px-1 py-0.5">Observações:</div>
-        </div>
+          <div className="grid grid-cols-5 border border-black text-[8px] font-black uppercase bg-white">
+             <div className="border-r border-black px-1 py-0.5">Prefixo da VTR: <span className="ml-1 text-[9px]">{selectedPrefix}</span></div>
+             <div className="border-r border-black px-1 py-0.5">Posto: <span className="ml-1 text-[9px]">{vehicle?.station}</span></div>
+             <div className="border-r border-black px-1 py-0.5">GB: <span className="ml-1 text-[9px]">{vehicle?.gb}</span></div>
+             <div className="border-r border-black px-1 py-0.5 text-center">Mês: <span className="ml-1 text-[9px]">{getMonthLabel(monthFilter).toUpperCase()}</span></div>
+             <div className="px-1 py-0.5">Observações:</div>
+          </div>
 
-        <table className="w-full ficha-table border-collapse text-[7.5px] font-black">
-          <thead>
-            <tr className="bg-[#ffff00]">
-              <th className="w-[150px] text-left px-2">DATA</th>
-              {days.map(d => (
-                <th key={d} className="w-[25px] text-center border-l border-black">{d}</th>
+          <table className="w-full ficha-table border-collapse text-[7.5px] font-black">
+            <thead>
+              <tr>
+                <th className="w-[150px] text-left px-2 bg-gray-100">DATA</th>
+                {days.map(d => (
+                  <th key={d} className={`w-[25px] text-center border-l border-black ${getDayColor(d)}`}>{d}</th>
+                ))}
+              </tr>
+              <tr className="bg-red-600 text-white">
+                <th className="text-left px-2 uppercase">Item de Verificação Técnica</th>
+                {days.map(d => <th key={d} className="border-l border-black"></th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {displayItems.map((itemLabel, rowIdx) => (
+                <tr key={rowIdx} className={itemLabel ? '' : 'h-4'}>
+                  <td className={`px-2 border border-black ${itemLabel ? '' : 'bg-gray-50'}`}>
+                    {itemLabel ? `${rowIdx + 1}. ${itemLabel.slice(0, 50)}` : ''}
+                  </td>
+                  {days.map(d => {
+                    const log = logsByDay[d];
+                    let { val, colorClass } = log ? getItemStatusFromLog(log, itemLabel) : { val: '', colorClass: '' };
+                    
+                    if (!log) {
+                      // Se não tem log, verificar se tem justificativa
+                      const dayStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                      const hasJustification = justifications.some(j => 
+                        j.month === monthFilter && 
+                        normalizePrefix(j.vehicleType) === normalizePrefix(selectedPrefix) &&
+                        (j.date.startsWith(dayStr) || new Date(j.date).getDate() === d)
+                      );
+                      if (hasJustification) {
+                        val = 'JS';
+                        colorClass = 'text-purple-600 bg-purple-50';
+                      }
+                    }
+                    return (
+                      <td key={d} className={`text-center font-black border border-black ${colorClass}`}>
+                        {val}
+                      </td>
+                    );
+                  })}
+                </tr>
               ))}
-            </tr>
-            <tr className="bg-red-600 text-white">
-              <th className="text-left px-2 uppercase">Item de Verificação Técnica</th>
-              {days.map(d => <th key={d} className="border-l border-black"></th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {displayItems.map((itemLabel, rowIdx) => (
-              <tr key={rowIdx} className={itemLabel ? '' : 'h-4'}>
-                <td className={`px-2 border border-black ${itemLabel ? '' : 'bg-gray-50'}`}>
-                  {itemLabel ? `${rowIdx + 1}. ${itemLabel.slice(0, 50)}` : ''}
+              
+              {/* Linha NOME - Ajustada para ser idêntica ao RE e evitar expansão */}
+              <tr className="h-[85px]">
+                <td className="bg-[#e8f5e9] text-center border border-black">
+                   <div className="vertical-text mx-auto font-black text-[9px] tracking-widest h-[85px] flex items-center justify-center">NOME</div>
                 </td>
                 {days.map(d => {
-                  if (d > daysInMonth) return <td key={d} className="bg-gray-200 border border-black"></td>;
-                  const log = logsByDay[d];
-                  let val = '';
-                  let colorClass = '';
-                  if (log) {
-                    if (log.vehicleStatus === 'BAIXADA') {
-                      val = 'BX';
-                      colorClass = 'text-red-600';
-                    } else if (log.vehicleStatus === 'RESERVA') {
-                      val = 'RS';
-                      colorClass = 'text-orange-600';
-                    } else if (log.itemsDetail) {
-                      try {
-                        const details = JSON.parse(log.itemsDetail);
-                        const itemStatus = details.find((det: any) => det.label === itemLabel)?.status;
-                        if (itemStatus === 'SN' || itemStatus === 'OK') {
-                          val = 'SN';
-                        } else if (itemStatus === 'CN') {
-                          val = 'CN';
-                          colorClass = 'text-red-700 bg-red-50';
-                        }
-                      } catch(e) {}
-                    }
-                  }
-                  return (
-                    <td key={d} className={`text-center font-black border border-black ${colorClass}`}>
-                      {val}
-                    </td>
-                  );
+                   const log = logsByDay[d];
+                   if (log) {
+                     const full = getFullData(log);
+                     const name = (full?.signatureName || '').toUpperCase();
+                     return (
+                       <td key={d} className="p-0 border border-black overflow-hidden h-[85px]">
+                          <div className="vertical-text mx-auto text-[7px] leading-tight font-black h-[85px] flex items-center justify-center uppercase overflow-hidden">
+                             {name.substring(0, 20)}
+                          </div>
+                       </td>
+                     );
+                   } else {
+                     // Verificar Justificativa
+                     const dayStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                     const justification = justifications.find(j => 
+                        j.month === monthFilter && 
+                        normalizePrefix(j.vehicleType) === normalizePrefix(selectedPrefix) &&
+                        (j.date.startsWith(dayStr) || new Date(j.date).getDate() === d)
+                     );
+                     if (justification) {
+                        return (
+                          <td key={d} className="p-0 border border-black overflow-hidden h-[85px] bg-purple-50">
+                             <div className="vertical-text mx-auto text-[7px] leading-tight font-black h-[85px] flex items-center justify-center uppercase overflow-hidden text-purple-700">
+                                {justification.author.substring(0, 20).toUpperCase()}
+                             </div>
+                          </td>
+                        );
+                     }
+                     return <td key={d} className="border border-black"></td>;
+                   }
                 })}
               </tr>
-            ))}
-            
-            {/* Linha NOME - Ajustada para ser idêntica ao RE e evitar expansão */}
-            <tr className="h-[60px]">
-              <td className="bg-[#e8f5e9] text-center border border-black">
-                 <div className="vertical-text mx-auto font-black text-[9px] tracking-widest h-[60px] flex items-center justify-center">NOME</div>
-              </td>
-              {days.map(d => {
-                 if (d > daysInMonth) return <td key={d} className="bg-gray-200 border border-black"></td>;
-                 const log = logsByDay[d];
-                 const full = log ? getFullData(log) : null;
-                 const name = full?.signatureName || '';
-                 return (
-                   <td key={d} className="p-0 border border-black overflow-hidden h-[60px]">
-                      <div className="vertical-text mx-auto text-[7px] leading-tight font-black h-[60px] flex items-center justify-center uppercase overflow-hidden">
-                         {name.split(' ').slice(-2).join(' ')}
-                      </div>
-                   </td>
-                 );
-              })}
-            </tr>
 
-            {/* Linha RE - Base de comparação e idêntica ao NOME */}
-            <tr className="h-[60px]">
-              <td className="bg-[#e8f5e9] text-center border border-black">
-                 <div className="vertical-text mx-auto font-black text-[9px] tracking-widest h-[60px] flex items-center justify-center">RE</div>
-              </td>
-              {days.map(d => {
-                 if (d > daysInMonth) return <td key={d} className="bg-gray-200 border border-black"></td>;
-                 const log = logsByDay[d];
-                 const full = log ? getFullData(log) : null;
-                 const re = full?.signatureRank || '';
-                 return (
-                   <td key={d} className="p-0 border border-black overflow-hidden h-[60px]">
-                      <div className="vertical-text mx-auto text-[8px] font-black h-[60px] flex items-center justify-center overflow-hidden">
-                        {re}
-                      </div>
-                   </td>
-                 );
-              })}
-            </tr>
-          </tbody>
-        </table>
+              {/* Linha RE - Base de comparação e idêntica ao NOME */}
+              <tr className="h-[85px]">
+                <td className="bg-[#e8f5e9] text-center border border-black">
+                   <div className="vertical-text mx-auto font-black text-[9px] tracking-widest h-[85px] flex items-center justify-center">RE</div>
+                </td>
+                {days.map(d => {
+                   const log = logsByDay[d];
+                   if (log) {
+                     const full = getFullData(log);
+                     const re = full?.signatureRank || '';
+                     return (
+                       <td key={d} className="p-0 border border-black overflow-hidden h-[85px]">
+                          <div className="vertical-text mx-auto text-[8px] font-black h-[85px] flex items-center justify-center overflow-hidden">
+                            {re}
+                          </div>
+                       </td>
+                     );
+                   } else {
+                     // Verificar Justificativa
+                     const dayStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                     const justification = justifications.find(j => 
+                        j.month === monthFilter && 
+                        normalizePrefix(j.vehicleType) === normalizePrefix(selectedPrefix) &&
+                        (j.date.startsWith(dayStr) || new Date(j.date).getDate() === d)
+                     );
+                     if (justification) {
+                        return (
+                          <td key={d} className="p-0 border border-black overflow-hidden h-[85px] bg-purple-50">
+                             <div className="vertical-text mx-auto text-[8px] font-black h-[85px] flex items-center justify-center overflow-hidden text-purple-700">
+                               {justification.authorRank}
+                             </div>
+                          </td>
+                        );
+                     }
+                     return <td key={d} className="border border-black"></td>;
+                   }
+                })}
+              </tr>
+            </tbody>
+          </table>
 
-        {/* Footer Conforming to image layout */}
-        <div className="mt-2 text-[8px] font-black uppercase">
-           <div className="grid grid-cols-4 gap-4">
-              {/* Legenda Col 1 */}
-              <div className="space-y-0.5">
-                 <div className="flex border border-black">
-                    <div className="w-16 border-r border-black px-1 font-bold">LEGENDA:</div>
-                    <div className="w-10 border-r border-black px-1 text-center">OK</div>
-                    <div className="flex-1 px-1">SEM NOVIDADES</div>
-                 </div>
-                 <div className="flex border border-black">
-                    <div className="w-16 border-r border-black px-1"></div>
-                    <div className="w-10 border-r border-black px-1 text-center">CN</div>
-                    <div className="flex-1 px-1">COM NOVIDADES</div>
-                 </div>
-              </div>
+          {/* Footer Conforming to image layout */}
+          <div className="mt-2 text-[8px] font-black uppercase">
+             <div className="grid grid-cols-4 gap-4">
+                {/* Legenda Col 1 */}
+                <div className="space-y-0.5">
+                   <div className="flex border border-black">
+                      <div className="w-16 border-r border-black px-1 font-bold">LEGENDA:</div>
+                      <div className="w-10 border-r border-black px-1 text-center">OK</div>
+                      <div className="flex-1 px-1">SEM NOVIDADES</div>
+                   </div>
+                   <div className="flex border border-black">
+                      <div className="w-16 border-r border-black px-1"></div>
+                      <div className="w-10 border-r border-black px-1 text-center">CN</div>
+                      <div className="flex-1 px-1">COM NOVIDADES</div>
+                   </div>
+                </div>
 
-              {/* Status do Mês Col 2 */}
-              <div className="space-y-0.5">
-                 <div className="text-center border-x border-t border-black bg-gray-100 py-0.5">STATUS DO MÊS</div>
-                 <div className="grid grid-cols-3 border border-black">
-                    <div className="border-r border-black px-1">OPERANDO</div>
-                    <div className="border-r border-black px-1 text-center">{countOperando}</div>
-                    <div className="px-1 text-right">DIAS</div>
-                 </div>
-                 <div className="grid grid-cols-3 border-x border-b border-black">
-                    <div className="border-r border-black px-1">BAIXADA</div>
-                    <div className="border-r border-black px-1 text-center">{countBaixada}</div>
-                    <div className="px-1 text-right">DIAS</div>
-                 </div>
-                 <div className="grid grid-cols-3 border-x border-b border-black">
-                    <div className="border-r border-black px-1">RESERVA</div>
-                    <div className="border-r border-black px-1 text-center">{countReserva}</div>
-                    <div className="px-1 text-right">DIAS</div>
-                 </div>
-              </div>
+                {/* Status do Mês Col 2 */}
+                <div className="space-y-0.5">
+                   <div className="text-center border-x border-t border-black bg-gray-100 py-0.5">STATUS DO MÊS</div>
+                   <div className="grid grid-cols-3 border border-black">
+                      <div className="border-r border-black px-1">OPERANDO</div>
+                      <div className="border-r border-black px-1 text-center">{countOperando}</div>
+                      <div className="px-1 text-right">DIAS</div>
+                   </div>
+                   <div className="grid grid-cols-3 border-x border-b border-black">
+                      <div className="border-r border-black px-1">BAIXADA</div>
+                      <div className="border-r border-black px-1 text-center">{countBaixada}</div>
+                      <div className="px-1 text-right">DIAS</div>
+                   </div>
+                   <div className="grid grid-cols-3 border-x border-b border-black">
+                      <div className="border-r border-black px-1">RESERVA</div>
+                      <div className="border-r border-black px-1 text-center">{countReserva}</div>
+                      <div className="px-1 text-right">DIAS</div>
+                   </div>
+                </div>
 
-              {/* Assinaturas Motoristas Col 3 */}
-              <div className="space-y-0.5">
-                 <div className="flex justify-between border-x border-t border-black bg-gray-100 px-1 py-0.5">
-                    <span>CH DOS MOTORISTAS</span>
-                    <span>VISTO</span>
-                 </div>
-                 <div className="flex border border-black">
-                    <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">AMARELA</div>
-                    <div className="flex-1"></div>
-                 </div>
-                 <div className="flex border-x border-b border-black">
-                    <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">AZUL</div>
-                    <div className="flex-1"></div>
-                 </div>
-                 <div className="flex border-x border-b border-black">
-                    <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">VERDE</div>
-                    <div className="flex-1"></div>
-                 </div>
-              </div>
+                {/* Assinaturas Motoristas Col 3 */}
+                <div className="space-y-0.5">
+                   <div className="flex justify-between border-x border-t border-black bg-gray-100 px-1 py-0.5">
+                      <span>CH DOS MOTORISTAS</span>
+                      <span>VISTO</span>
+                   </div>
+                   <div className="flex border border-black">
+                      <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">AMARELA</div>
+                      <div className="flex-1"></div>
+                   </div>
+                   <div className="flex border-x border-b border-black">
+                      <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">AZUL</div>
+                      <div className="flex-1"></div>
+                   </div>
+                   <div className="flex border-x border-b border-black">
+                      <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">VERDE</div>
+                      <div className="flex-1"></div>
+                   </div>
+                </div>
 
-              {/* Assinaturas Prontidão Col 4 */}
-              <div className="space-y-0.5">
-                 <div className="flex justify-between border-x border-t border-black bg-gray-100 px-1 py-0.5">
-                    <span>CMT PRONTIDÃO</span>
-                    <span>VISTO</span>
-                 </div>
-                 <div className="flex border border-black">
-                    <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">AMARELA</div>
-                    <div className="flex-1"></div>
-                 </div>
-                 <div className="flex border-x border-b border-black">
-                    <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">AZUL</div>
-                    <div className="flex-1"></div>
-                 </div>
-                 <div className="flex border-x border-b border-black">
-                    <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">VERDE</div>
-                    <div className="flex-1"></div>
-                 </div>
-              </div>
-           </div>
+                {/* Assinaturas Prontidão Col 4 */}
+                <div className="space-y-0.5">
+                   <div className="flex justify-between border-x border-t border-black bg-gray-100 px-1 py-0.5">
+                      <span>CMT PRONTIDÃO</span>
+                      <span>VISTO</span>
+                   </div>
+                   <div className="flex border border-black">
+                      <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">AMARELA</div>
+                      <div className="flex-1"></div>
+                   </div>
+                   <div className="flex border-x border-b border-black">
+                      <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">AZUL</div>
+                      <div className="flex-1"></div>
+                   </div>
+                   <div className="flex border-x border-b border-black">
+                      <div className="w-2/3 border-r border-black px-1 h-4 flex items-center">VERDE</div>
+                      <div className="flex-1"></div>
+                   </div>
+                </div>
+             </div>
 
-           {/* Final Signature Row */}
-           <div className="grid grid-cols-2 mt-4 gap-12">
-              <div className="border-t border-black pt-1 text-center">
-                 <span className="block font-black">CMT POSTO</span>
-              </div>
-              <div className="border-t border-black pt-1 text-center">
-                 <span className="block font-black">CMT S/GB</span>
-              </div>
-           </div>
+             {/* Final Signature Row */}
+             <div className="grid grid-cols-3 mt-4 gap-4 items-end">
+                <div className="border-t border-black pt-1 text-center">
+                   <span className="block font-black">CMT POSTO</span>
+                </div>
+                
+                <div className="flex flex-col items-center">
+                   {(() => {
+                      const prefix = Array.from(selectedPrefixes)[0];
+                      const closure = monthClosures.find(c => 
+                        c.details.includes(monthFilter) && c.details.includes(prefix)
+                      );
+                      
+                      if (closure) {
+                        return (
+                          <div className="w-full border-t border-black text-center pt-1 text-green-600">
+                            <CheckCircle className="w-4 h-4 mx-auto mb-1" />
+                            <p className="text-[8px] font-black uppercase">MÊS ENCERRADO PELO CHEFE:</p>
+                            <p className="text-[7px] font-black uppercase">{closure.user}</p>
+                            <p className="text-[7px] opacity-70 uppercase">DATA: {closure.date}</p>
+                          </div>
+                        );
+                      }
+                      
+                      return (
+                        <div className="w-full border-t border-black text-center pt-1">
+                          <p className="text-[8px] font-black uppercase">CH DOS MOTORISTAS (FECHAMENTO)</p>
+                          <button 
+                            onClick={() => setShowClosureModal(true)}
+                            className="mt-1 px-3 py-1 bg-blue-600 text-white rounded text-[7px] font-black uppercase no-print hover:bg-blue-700 transition-all active:scale-95 flex items-center gap-1 mx-auto"
+                          >
+                            <Lock className="w-3 h-3" /> Assinar Fechamento
+                          </button>
+                        </div>
+                      );
+                   })()}
+                </div>
 
-           <div className="mt-2 flex justify-between items-center text-[7px] text-gray-400 no-print">
-              <span>Página <span className="page-number"></span></span>
-              <span>Protocolo de Emissão: {Math.random().toString(36).substring(7).toUpperCase()}</span>
-           </div>
+                <div className="border-t border-black pt-1 text-center">
+                   <span className="block font-black">CMT S/GB</span>
+                </div>
+             </div>
+
+             <div className="mt-2 flex justify-between items-center text-[7px] text-gray-400 no-print">
+                <span>Página <span className="page-number"></span></span>
+                <span>Protocolo de Emissão: {Math.random().toString(36).substring(7).toUpperCase()}</span>
+             </div>
+          </div>
         </div>
-      </div>
-
+        {renderJustificationSheet('DIÁRIO', selectedPrefix, monthFilter)}
+      </>
     );
   };
 
@@ -760,14 +995,7 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
                 <td className="px-2 border-black max-w-[200px] truncate">{label}</td>
                 {weeks.map((_, wIdx) => {
                   const log = logsByWeek[wIdx];
-                  let val = '';
-                  if (log?.itemsDetail) {
-                    try {
-                      const details = JSON.parse(log.itemsDetail);
-                      const status = details.find((d:any) => d.label === label)?.status;
-                      val = status === 'SN' || status === 'OK' ? 'OK' : (status === 'CN' ? 'CN' : '');
-                    } catch(e){}
-                  }
+                  const { val } = log ? getItemStatusFromLog(log, label) : { val: '' };
                   return <td key={wIdx} className="text-center border-black">{val}</td>;
                 })}
                 <td className="border-black"></td>
@@ -832,6 +1060,7 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
             </div>
           </div>
         </div>
+        {renderJustificationSheet(`SEMANAL ${vType}`, selectedPrefix, monthFilter)}
       </div>
     );
   };
@@ -863,7 +1092,12 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
     
     const [year, month] = monthFilter.split('-').map(Number);
     const daysInMonth = new Date(year, month, 0).getDate();
-    const days = Array.from({ length: 31 }, (_, i) => i + 1);
+    const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+
+    const getDayColor = (d: number) => {
+      const colors = ['bg-[#4ade80]', 'bg-[#facc15]', 'bg-[#60a5fa]'];
+      return colors[(d - 1) % 3];
+    };
 
     const logsByDay: Record<number, LogEntry> = {};
     filteredLogs.forEach(log => {
@@ -975,10 +1209,10 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
 
         <table className="w-full ficha-table border-collapse text-[7.5px] font-black">
           <thead>
-            <tr className="bg-yellow-100">
-              <th className="w-[150px] text-left px-2">DATA</th>
+            <tr>
+              <th className="w-[150px] text-left px-2 bg-gray-100">DATA</th>
               {days.map(d => (
-                <th key={d} className="w-[25px] text-center border-l border-black">{d}</th>
+                <th key={d} className={`w-[25px] text-center border-l border-black ${getDayColor(d)}`}>{d}</th>
               ))}
             </tr>
             <tr className="bg-red-600 text-white">
@@ -993,28 +1227,20 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
                   {itemLabel ? `${rowIdx + 1}. ${itemLabel.slice(0, 50)}` : ''}
                 </td>
                 {days.map(d => {
-                  if (d > daysInMonth) return <td key={d} className="bg-gray-200 border border-black"></td>;
                   const log = logsByDay[d];
-                  let val = '';
-                  let colorClass = '';
-                  if (log) {
-                    if (log.vehicleStatus === 'BAIXADA') {
-                      val = 'BX';
-                      colorClass = 'text-red-600';
-                    } else if (log.vehicleStatus === 'RESERVA') {
-                      val = 'RS';
-                      colorClass = 'text-orange-600';
-                    } else if (log.itemsDetail) {
-                      try {
-                        const details = JSON.parse(log.itemsDetail);
-                        const itemStatus = details.find((det: any) => det.label === itemLabel)?.status;
-                        if (itemStatus === 'SN' || itemStatus === 'OK') {
-                          val = 'SN';
-                        } else if (itemStatus === 'CN') {
-                          val = 'CN';
-                          colorClass = 'text-red-700 bg-red-50';
-                        }
-                      } catch(e) {}
+                  let { val, colorClass } = log ? getItemStatusFromLog(log, itemLabel) : { val: '', colorClass: '' };
+                  
+                  if (!log) {
+                    // Justificativa
+                    const dayStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                    const hasJustification = justifications.some(j => 
+                      j.month === monthFilter && 
+                      normalizePrefix(j.vehicleType) === normalizePrefix(selectedPrefix) &&
+                      (j.date.startsWith(dayStr) || new Date(j.date).getDate() === d)
+                    );
+                    if (hasJustification) {
+                      val = 'JS';
+                      colorClass = 'text-purple-600 bg-purple-50';
                     }
                   }
                   return (
@@ -1026,41 +1252,79 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
               </tr>
             ))}
             
-            <tr className="h-[60px]">
+            <tr className="h-[85px]">
               <td className="bg-[#e8f5e9] text-center border border-black">
-                 <div className="vertical-text mx-auto font-black text-[9px] tracking-widest h-[60px] flex items-center justify-center">NOME</div>
+                 <div className="vertical-text mx-auto font-black text-[9px] tracking-widest h-[85px] flex items-center justify-center">NOME</div>
               </td>
               {days.map(d => {
-                 if (d > daysInMonth) return <td key={d} className="bg-gray-200 border border-black"></td>;
                  const log = logsByDay[d];
-                 const full = log ? getFullData(log) : null;
-                 const name = full?.signatureName || '';
-                 return (
-                   <td key={d} className="p-0 border border-black overflow-hidden h-[60px]">
-                      <div className="vertical-text mx-auto text-[7px] leading-tight font-black h-[60px] flex items-center justify-center uppercase overflow-hidden">
-                         {name.split(' ').slice(-2).join(' ')}
-                      </div>
-                   </td>
-                 );
+                 if (log) {
+                   const full = getFullData(log);
+                   const name = (full?.signatureName || '').toUpperCase();
+                   return (
+                     <td key={d} className="p-0 border border-black overflow-hidden h-[85px]">
+                        <div className="vertical-text mx-auto text-[7px] leading-tight font-black h-[85px] flex items-center justify-center uppercase overflow-hidden">
+                           {name.substring(0, 20)}
+                        </div>
+                     </td>
+                   );
+                 } else {
+                    // Justificativa
+                    const dayStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                    const justification = justifications.find(j => 
+                      j.month === monthFilter && 
+                      normalizePrefix(j.vehicleType) === normalizePrefix(selectedPrefix) &&
+                      (j.date.startsWith(dayStr) || new Date(j.date).getDate() === d)
+                    );
+                    if (justification) {
+                      return (
+                        <td key={d} className="p-0 border border-black overflow-hidden h-[85px] bg-purple-50">
+                           <div className="vertical-text mx-auto text-[7px] leading-tight font-black h-[85px] flex items-center justify-center uppercase overflow-hidden text-purple-700">
+                              {justification.author.substring(0, 20).toUpperCase()}
+                           </div>
+                        </td>
+                      );
+                    }
+                    return <td key={d} className="border border-black"></td>;
+                 }
               })}
             </tr>
 
-            <tr className="h-[60px]">
+            <tr className="h-[85px]">
               <td className="bg-[#e8f5e9] text-center border border-black">
-                 <div className="vertical-text mx-auto font-black text-[9px] tracking-widest h-[60px] flex items-center justify-center">RE</div>
+                 <div className="vertical-text mx-auto font-black text-[9px] tracking-widest h-[85px] flex items-center justify-center">RE</div>
               </td>
               {days.map(d => {
-                 if (d > daysInMonth) return <td key={d} className="bg-gray-200 border border-black"></td>;
                  const log = logsByDay[d];
-                 const full = log ? getFullData(log) : null;
-                 const re = full?.signatureRank || '';
-                 return (
-                   <td key={d} className="p-0 border border-black overflow-hidden h-[60px]">
-                      <div className="vertical-text mx-auto text-[8px] font-black h-[60px] flex items-center justify-center overflow-hidden">
-                        {re}
-                      </div>
-                   </td>
-                 );
+                 if (log) {
+                   const full = getFullData(log);
+                   const re = full?.signatureRank || '';
+                   return (
+                     <td key={d} className="p-0 border border-black overflow-hidden h-[85px]">
+                        <div className="vertical-text mx-auto text-[8px] font-black h-[85px] flex items-center justify-center overflow-hidden">
+                          {re}
+                        </div>
+                     </td>
+                   );
+                 } else {
+                    // Justificativa
+                    const dayStr = `${year}-${month.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                    const justification = justifications.find(j => 
+                      j.month === monthFilter && 
+                      normalizePrefix(j.vehicleType) === normalizePrefix(selectedPrefix) &&
+                      (j.date.startsWith(dayStr) || new Date(j.date).getDate() === d)
+                    );
+                    if (justification) {
+                      return (
+                        <td key={d} className="p-0 border border-black overflow-hidden h-[85px] bg-purple-50">
+                           <div className="vertical-text mx-auto text-[8px] font-black h-[85px] flex items-center justify-center overflow-hidden text-purple-700">
+                             {justification.authorRank}
+                           </div>
+                        </td>
+                      );
+                    }
+                    return <td key={d} className="border border-black"></td>;
+                 }
               })}
             </tr>
           </tbody>
@@ -1140,14 +1404,159 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
               </div>
            </div>
 
-           <div className="grid grid-cols-2 mt-4 gap-12">
+           <div className="grid grid-cols-3 mt-4 gap-4 items-end">
               <div className="border-t border-black pt-1 text-center">
                  <span className="block font-black">CMT POSTO</span>
               </div>
+              
+              <div className="flex flex-col items-center">
+                 {(() => {
+                    const prefix = Array.from(selectedPrefixes)[0];
+                    const closure = monthClosures.find(c => 
+                      c.details.includes(monthFilter) && c.details.includes(prefix)
+                    );
+                    
+                    if (closure) {
+                      return (
+                        <div className="w-full border-t border-black text-center pt-1 text-green-600">
+                          <CheckCircle className="w-4 h-4 mx-auto mb-1" />
+                          <p className="text-[8px] font-black uppercase">MÊS ENCERRADO PELO CHEFE:</p>
+                          <p className="text-[7px] font-black uppercase">{closure.user}</p>
+                          <p className="text-[7px] opacity-70 uppercase">DATA: {closure.date}</p>
+                        </div>
+                      );
+                    }
+                    
+                    return (
+                      <div className="w-full border-t border-black text-center pt-1">
+                        <p className="text-[8px] font-black uppercase">CH DOS MOTORISTAS (FECHAMENTO)</p>
+                        <button 
+                          onClick={() => setShowClosureModal(true)}
+                          className="mt-1 px-3 py-1 bg-blue-600 text-white rounded text-[7px] font-black uppercase no-print hover:bg-blue-700 transition-all active:scale-95 flex items-center gap-1 mx-auto"
+                        >
+                          <Lock className="w-3 h-3" /> Assinar Fechamento
+                        </button>
+                      </div>
+                    );
+                 })()}
+              </div>
+
               <div className="border-t border-black pt-1 text-center">
                  <span className="block font-black">CMT S/GB</span>
               </div>
            </div>
+        </div>
+        {renderJustificationSheet('DIÁRIO MOTOS', selectedPrefix, monthFilter)}
+      </div>
+    );
+  };
+
+  const renderJustificationSheet = (type: string, vehiclePrefix: string, month: string) => {
+    const [year, monthNum] = month.split('-').map(Number);
+    const daysInMonth = new Date(year, monthNum, 0).getDate();
+    
+    // Find missing days
+    const existingDays = new Set<number>();
+    logs.filter(log => normalizePrefix(log.prefix) === normalizePrefix(vehiclePrefix)).forEach(log => {
+      const d = new Date(log.date);
+      if (d.getFullYear() === year && (d.getMonth() + 1) === monthNum) {
+        existingDays.add(d.getDate());
+      }
+    });
+
+    const missingDays = Array.from({ length: daysInMonth }, (_, i) => i + 1)
+      .filter(d => !existingDays.has(d));
+
+    const reportJustifications = justifications.filter(j => 
+      j.month === month && 
+      (normalizePrefix(j.vehicleType) === normalizePrefix(vehiclePrefix) || normalizePrefix(j.station) === normalizePrefix(vehiclePrefix))
+    );
+
+    return (
+      <div className="mt-8 border border-black p-4 bg-white break-before-page" style={{ pageBreakBefore: 'always' }}>
+        <div className="text-center border-b border-black pb-2 mb-4">
+          <h2 className="text-sm font-black uppercase">FOLHA DE JUSTIFICATIVAS - {type}</h2>
+          <p className="text-[10px] font-bold uppercase">MÊS DE REFERÊNCIA: {getMonthLabel(month).toUpperCase()} | VTR: {vehiclePrefix}</p>
+        </div>
+
+        <div className="space-y-4">
+          <div className="border border-black">
+            <div className="bg-gray-100 border-b border-black p-1 text-[9px] font-black uppercase text-center">Dias sem preenchimento / Registro Retroativo</div>
+            <table className="w-full text-[8px] border-collapse">
+              <thead>
+                <tr className="bg-gray-50 border-b border-black">
+                  <th className="w-16 border-r border-black p-1">DIA</th>
+                  <th className="flex-1 p-1 text-left">JUSTIFICATIVA</th>
+                  <th className="w-48 border-l border-black p-1 text-left">RESPONSÁVEL (CHEFE MOTORISTAS)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {missingDays.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="p-4 text-center text-gray-400 font-bold uppercase italic border-b border-black">Nenhuma ausência de registro detectada para este período.</td>
+                  </tr>
+                )}
+                {missingDays.map(day => {
+                  const dayStr = `${year}-${monthNum.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+                  const justification = reportJustifications.find(j => j.date.startsWith(dayStr) || new Date(j.date).getDate() === day);
+                  return (
+                    <tr key={day} className="border-b border-black h-8">
+                      <td className="border-r border-black p-1 text-center font-black">{day.toString().padStart(2, '0')}</td>
+                      <td className="p-1 uppercase">{justification?.justification || '-'}</td>
+                      <td className="border-l border-black p-1 flex flex-col justify-center">
+                        <span className="font-black">{justification?.author || '________________________'}</span>
+                        <span className="text-[7px] text-gray-400">{justification ? `RE: ${justification.authorRank}` : 'ASSINATURA / RE'}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 mt-8">
+            <div className="border border-black p-2 min-h-[80px]">
+              <p className="text-[8px] font-black uppercase mb-1">CIÊNCIA DOS CHEFES DOS MOTORISTAS (ENCERRAMENTO MENSAL):</p>
+              <div className="grid grid-cols-3 gap-8 mt-6">
+                <div className="border-t border-black text-center pt-1 text-[8px] font-black uppercase">AMARELA</div>
+                <div className="border-t border-black text-center pt-1 text-[8px] font-black uppercase">AZUL</div>
+                <div className="border-t border-black text-center pt-1 text-[8px] font-black uppercase">VERDE</div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="mt-4 flex flex-col items-center">
+             {(() => {
+                const prefix = Array.from(selectedPrefixes)[0];
+                const closure = monthClosures.find(c => 
+                  c.details.includes(monthFilter) && c.details.includes(prefix)
+                );
+                
+                if (closure) {
+                  return (
+                    <div className="w-64 border-t border-black text-center pt-1 text-green-600">
+                      <CheckCircle className="w-4 h-4 mx-auto mb-1" />
+                      <p className="text-[8px] font-black uppercase">MÊS ENCERRADO PELO CHEFE:</p>
+                      <p className="text-[7px] font-black uppercase">{closure.user}</p>
+                      <p className="text-[7px] opacity-70 uppercase">DATA: {closure.date}</p>
+                    </div>
+                  );
+                }
+                
+                return (
+                  <div className="w-64 border-t border-black text-center pt-1">
+                    <p className="text-[8px] font-black uppercase">ASSINATURA DO ÚLTIMO CHEFE (FECHAMENTO DO MÊS)</p>
+                    <p className="text-[7px] text-gray-400">ENCERRADO EM: ____/____/202__</p>
+                    <button 
+                      onClick={() => setShowClosureModal(true)}
+                      className="mt-2 px-3 py-1 bg-blue-600 text-white rounded text-[8px] font-black uppercase no-print hover:bg-blue-700 transition-all active:scale-95 flex items-center gap-1 mx-auto"
+                    >
+                      <Lock className="w-3 h-3" /> Assinar Fechamento
+                    </button>
+                  </div>
+                );
+             })()}
+          </div>
         </div>
       </div>
     );
@@ -1835,6 +2244,178 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
           </div>
         </div>
 
+        <div className="bg-white border rounded-3xl p-6 shadow-sm no-print">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="bg-blue-600 p-2.5 rounded-2xl text-white shadow-lg">
+                <FileText className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black uppercase text-gray-900 leading-tight">Painel de Justificativas</h3>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Lance ausências ou registros retroativos</p>
+              </div>
+            </div>
+            
+            <div className="flex gap-2">
+              {['daily_control', 'daily_control_motos', 'weekly_leves', 'weekly_motos', 'weekly_ab'].includes(activeReport) && (
+                <button 
+                  onClick={() => setShowJustificationModal(true)}
+                  className="flex items-center gap-2 bg-purple-50 text-purple-700 px-4 py-2.5 rounded-xl border border-purple-100 text-[10px] font-black uppercase tracking-widest hover:bg-purple-100 transition-all"
+                >
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Lançar Justificativa
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {showJustificationModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4 no-print">
+            <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-8 shadow-2xl space-y-6">
+              <div className="flex items-center justify-between">
+                 <h3 className="text-xl font-black uppercase text-gray-900 flex items-center gap-2">
+                   <AlertCircle className="w-5 h-5 text-purple-600" />
+                   Lançar Justificativa
+                 </h3>
+                 <button onClick={() => setShowJustificationModal(false)} className="text-gray-300 hover:text-gray-900 transition-colors"><X className="w-6 h-6" /></button>
+              </div>
+              
+              <div className="bg-purple-50 border border-purple-100 p-4 rounded-2xl">
+                 <p className="text-[10px] text-purple-800 font-bold uppercase leading-relaxed text-center">
+                   Esta justificativa será registrada no banco de dados para o mês de <span className="text-purple-600">{getMonthLabel(monthFilter)}</span>.
+                 </p>
+              </div>
+
+              <div className="space-y-4">
+                 <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Viatura</label>
+                      <input 
+                        type="text" 
+                        value={selectedPrefixes.size === 1 ? Array.from(selectedPrefixes)[0] : 'Selecione uma VTR'} 
+                        disabled
+                        className="w-full border-2 rounded-2xl p-4 bg-gray-50 font-black uppercase text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Para o Dia</label>
+                      <select 
+                        value={newJustification.date} 
+                        onChange={e => setNewJustification({...newJustification, date: e.target.value})}
+                        className="w-full border-2 rounded-2xl p-4 text-sm font-bold focus:border-purple-500 outline-none transition-all bg-white"
+                      >
+                         <option value="">Selecione o Dia</option>
+                         {(() => {
+                            if (!monthFilter || selectedPrefixes.size !== 1) return null;
+                            const [year, monthNum] = monthFilter.split('-').map(Number);
+                            const daysInMonth = new Date(year, monthNum, 0).getDate();
+                            const prefix = Array.from(selectedPrefixes)[0];
+                            
+                            // Dias que JÁ TÊM checklist
+                            const logsThisMonth = logs.filter(log => 
+                              normalizePrefix(log.prefix) === normalizePrefix(prefix) &&
+                              parseLogDateToMonth(log.date) === monthFilter
+                            );
+                            const filledDays = new Set(logsThisMonth.map(l => new Date(l.date).getDate()));
+
+                            return Array.from({ length: daysInMonth }, (_, i) => i + 1)
+                              .filter(d => !filledDays.has(d))
+                              .map(d => {
+                                const dStr = `${year}-${monthNum.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                                return <option key={d} value={dStr}>{d.toString().padStart(2, '0')} ({getMonthLabel(monthFilter).split(' ')[0]})</option>;
+                              });
+                         })()}
+                      </select>
+                    </div>
+                 </div>
+
+                 <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Chefe Motoristas</label>
+                      <input 
+                        type="text" 
+                        placeholder="Nome completo"
+                        value={newJustification.author}
+                        onChange={e => setNewJustification({...newJustification, author: e.target.value})}
+                        className="w-full border-2 rounded-2xl p-4 text-sm font-bold focus:border-purple-500 outline-none transition-all"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-gray-400 uppercase ml-1">RE / Graduação</label>
+                      <input 
+                        type="text" 
+                        placeholder="Ex: 123.456-7"
+                        value={newJustification.authorRank}
+                        onChange={e => setNewJustification({...newJustification, authorRank: e.target.value})}
+                        className="w-full border-2 rounded-2xl p-4 text-sm font-bold focus:border-purple-500 outline-none transition-all"
+                      />
+                    </div>
+                 </div>
+
+                 <div className="space-y-1">
+                   <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Justificativa / Motivo</label>
+                   <textarea 
+                     rows={4}
+                     value={newJustification.justification}
+                     onChange={e => setNewJustification({...newJustification, justification: e.target.value})}
+                     placeholder="Ex: Não houve preenchimento devido a pane elétrica no tablet da viatura."
+                     className="w-full border-2 rounded-2xl p-4 text-sm font-medium focus:border-purple-500 outline-none transition-all resize-none"
+                   />
+                 </div>
+              </div>
+
+              <button 
+                onClick={async () => {
+                  if (!newJustification.date || !newJustification.justification || !newJustification.author || selectedPrefixes.size !== 1) {
+                    alert("Preencha todos os campos obrigatórios (incluindo o Chefe dos Motoristas) e selecione uma viatura.");
+                    return;
+                  }
+                  const rawUrl = settings.googleSheetUrl;
+                  if (!rawUrl) {
+                    alert("URL do banco de dados não configurada nas configurações.");
+                    return;
+                  }
+                  const prefix = Array.from(selectedPrefixes)[0];
+                  
+                  const jData = {
+                    action: 'saveJustification',
+                    id: crypto.randomUUID(),
+                    dateRef: newJustification.date,
+                    type: activeReport === 'daily_control' ? 'DIARIO' : 'SEMANAL',
+                    vehicleType: prefix,
+                    station: prefix,
+                    justification: newJustification.justification,
+                    author: newJustification.author, 
+                    authorRank: newJustification.authorRank,
+                    createdAt: new Date().toISOString(),
+                    month: monthFilter,
+                    status: 'SIGNED'
+                  };
+
+                  try {
+                    const url = `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=saveJustification`;
+                    await fetch(url, {
+                      method: 'POST',
+                      mode: 'no-cors',
+                      body: JSON.stringify(jData)
+                    });
+                    alert("JUSTIFICATIVA REGISTRADA NO BANCO COM SUCESSO!");
+                    setShowJustificationModal(false);
+                    setNewJustification({ date: '', justification: '', author: '', authorRank: '' });
+                    fetchJustifications();
+                  } catch (e) {
+                    alert("Erro ao conectar com o banco de dados.");
+                  }
+                }}
+                className="w-full bg-purple-600 text-white font-black py-4 rounded-2xl shadow-xl hover:bg-purple-700 transition-all uppercase tracking-widest text-xs"
+              >
+                Registrar Justificativa
+              </button>
+            </div>
+          </div>
+        )}
+
         <div ref={reportRef} data-pdf-content="report" className="bg-white p-8 rounded-[2.5rem] border shadow-sm print:p-0 print:border-0 print:shadow-none relative overflow-hidden">
           <Watermark />
           {activeReport === 'novelties' && renderNoveltiesReport()}
@@ -2457,6 +3038,75 @@ export const Reports: React.FC<ReportsProps> = ({ logs, settings, onFetch, isLoa
                  </div>
               </div>
            </div>
+        </div>
+      )}
+
+      {showClosureModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-sm rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300">
+            <div className="bg-blue-600 p-6 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Lock className="w-5 h-5" />
+                <h3 className="font-black text-xs uppercase tracking-widest">Encerramento Mensal</h3>
+              </div>
+              <button 
+                onClick={() => setShowClosureModal(false)}
+                className="p-2 hover:bg-white/20 rounded-full transition-colors"
+                disabled={isClosingMonth}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-8 space-y-6">
+              <div className="text-center space-y-2">
+                <ShieldCheck className="w-12 h-12 text-blue-600 mx-auto" />
+                <p className="text-[10px] font-bold text-gray-400 uppercase leading-relaxed">
+                  Esta ação encerrará oficialmente as folhas de {monthFilter} para a viatura {Array.from(selectedPrefixes)[0]}. Esta assinatura é digital e será registrada na auditoria.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-500 uppercase ml-1">Usuário</label>
+                  <input 
+                    type="text" 
+                    value={closureAuth.username}
+                    onChange={e => setClosureAuth({...closureAuth, username: e.target.value})}
+                    placeholder="USUÁRIO"
+                    className="w-full border-2 rounded-2xl p-4 text-center font-black uppercase focus:border-blue-500 outline-none transition-all"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-500 uppercase ml-1">Senha</label>
+                  <input 
+                    type="password" 
+                    value={closureAuth.password}
+                    onChange={e => setClosureAuth({...closureAuth, password: e.target.value})}
+                    placeholder="SENHA"
+                    className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-blue-500 outline-none transition-all"
+                  />
+                </div>
+              </div>
+
+              <button 
+                onClick={handleMonthClosure}
+                disabled={isClosingMonth}
+                className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-blue-700 transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isClosingMonth ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+                Assinar e Encerrar
+              </button>
+              
+              <button 
+                onClick={() => setShowClosureModal(false)}
+                className="w-full text-gray-400 font-bold text-[10px] uppercase hover:text-gray-600"
+                disabled={isClosingMonth}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

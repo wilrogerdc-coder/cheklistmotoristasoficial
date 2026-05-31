@@ -41,6 +41,52 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
+    // AÇÃO: Salvar Log de Auditoria
+    if (action === 'saveAuditLog') {
+      let auditSheet = sheet.getSheetByName('AUDITORIA');
+      if (!auditSheet) {
+        auditSheet = sheet.insertSheet('AUDITORIA');
+        auditSheet.appendRow(['DATA', 'USUARIO', 'ACAO', 'DETALHES', 'ID']);
+      }
+      
+      auditSheet.appendRow([
+        data.date,
+        data.user,
+        data.actionLog, // 'action' is reserved in doPost logic
+        data.details,
+        data.id
+      ]);
+
+      return ContentService.createTextOutput(JSON.stringify({ result: 'success' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // AÇÃO: Salvar Justificativa
+    if (action === 'saveJustification') {
+      let jSheet = sheet.getSheetByName('JUSTIFICATIVAS');
+      if (!jSheet) {
+        jSheet = sheet.insertSheet('JUSTIFICATIVAS');
+        jSheet.appendRow(['ID', 'DATA_REFERENCIA', 'TIPO', 'TIPO_VEICULO', 'POSTO', 'JUSTIFICATIVA', 'AUTOR', 'RE', 'CRIADO_EM', 'MES', 'STATUS']);
+      }
+      
+      jSheet.appendRow([
+        data.id,
+        data.dateRef,
+        data.type,
+        data.vehicleType,
+        data.station,
+        data.justification,
+        data.author,
+        data.authorRank,
+        data.createdAt,
+        data.month,
+        data.status
+      ]);
+
+      return ContentService.createTextOutput(JSON.stringify({ result: 'success' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
     // AÇÃO: Sincronizar Entidades (Viaturas, Postos, Usuários)
     if (action === 'syncEntities') {
       const vehicles = JSON.parse(data.vehicles || '[]');
@@ -65,10 +111,68 @@ function doPost(e) {
       let uSheet = sheet.getSheetByName('USUARIOS');
       if (!uSheet) uSheet = sheet.insertSheet('USUARIOS');
       uSheet.clear();
-      uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'RE', 'PERMISSOES']);
-      users.forEach(u => uSheet.appendRow([u.id, u.name || '', u.username, u.rank || '', JSON.stringify(u.permissions)]));
+      uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES']);
+      users.forEach(u => uSheet.appendRow([u.id, u.name || '', u.username, u.password || '', u.rank || '', JSON.stringify(u.permissions)]));
 
       return ContentService.createTextOutput(JSON.stringify({ result: 'success', message: 'Sincronização completa' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // AÇÃO: Salvar/Atualizar Usuário Individual
+    if (action === 'saveUser') {
+      let uSheet = sheet.getSheetByName('USUARIOS');
+      if (!uSheet) {
+        uSheet = sheet.insertSheet('USUARIOS');
+        uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES']);
+      }
+      
+      const rows = uSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const usernameIndex = headers.indexOf('USUARIO');
+      
+      let rowIndex = -1;
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i][usernameIndex] === data.username) {
+          rowIndex = i + 1;
+          break;
+        }
+      }
+      
+      const userData = [
+        data.id || Utilities.getUuid(),
+        data.name || '',
+        data.username,
+        data.password || '',
+        data.rank || '',
+        typeof data.permissions === 'string' ? data.permissions : JSON.stringify(data.permissions || { checklist: true, reports: true, settings: true })
+      ];
+      
+      if (rowIndex > 0) {
+        uSheet.getRange(rowIndex, 1, 1, userData.length).setValues([userData]);
+      } else {
+        uSheet.appendRow(userData);
+      }
+      
+      return ContentService.createTextOutput(JSON.stringify({ result: 'success' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // AÇÃO: Excluir Usuário
+    if (action === 'deleteUser') {
+      let uSheet = sheet.getSheetByName('USUARIOS');
+      if (!uSheet) return ContentService.createTextOutput(JSON.stringify({ result: 'error', message: 'Sheet not found' })).setMimeType(ContentService.MimeType.JSON);
+      
+      const rows = uSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const usernameIndex = headers.indexOf('USUARIO');
+      
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i][usernameIndex] === data.username) {
+          uSheet.deleteRow(i + 1);
+          break;
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ result: 'success' }))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -127,29 +231,90 @@ function doGet(e) {
       const rows = uSheet.getDataRange().getValues();
       const headers = rows[0];
       const users = rows.slice(1).map(row => {
-        let user = {};
+        let userArr = {};
         headers.forEach((header, i) => {
-          if (header === 'PERMISSOES') {
-             try {
-               user[header] = JSON.parse(row[i]);
-             } catch(e) {
-               user[header] = row[i];
-             }
-          } else {
-             user[header] = row[i];
-          }
+          userArr[header] = row[i];
         });
-        // Adaptar nomes das propriedades para o frontend
+        
+        let permissions = { checklist: true, reports: true, settings: true };
+        try {
+          const rawPerms = userArr['PERMISSOES'];
+          if (rawPerms) {
+            permissions = JSON.parse(rawPerms);
+          }
+        } catch(e) {}
+
         return {
-          id: user.ID,
-          name: user.NOME,
-          username: user.USUARIO,
-          rank: user.RE,
-          permissions: user.PERMISSOES
+          id: userArr['ID'],
+          name: userArr['NOME'],
+          username: userArr['USUARIO'],
+          password: userArr['SENHA'],
+          rank: userArr['RE'],
+          permissions: permissions
         };
       });
 
       return ContentService.createTextOutput(JSON.stringify(users))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action === 'getJustifications') {
+      const jSheet = sheet.getSheetByName('JUSTIFICATIVAS');
+      if (!jSheet) {
+        return ContentService.createTextOutput(JSON.stringify([]))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+
+      const rows = jSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const items = rows.slice(1).map(row => {
+        let item = {};
+        headers.forEach((header, i) => {
+          item[header] = row[i];
+        });
+        return {
+          id: item.ID,
+          date: item.DATA_REFERENCIA,
+          type: item.TIPO,
+          vehicleType: item.TIPO_VEICULO,
+          station: item.POSTO,
+          justification: item.JUSTIFICATIVA,
+          author: item.AUTOR,
+          authorRank: item.RE,
+          createdAt: item.CRIADO_EM,
+          month: item.MES,
+          status: item.STATUS
+        };
+      });
+
+      return ContentService.createTextOutput(JSON.stringify(items))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action === 'getAuditLogs') {
+      const auditSheet = sheet.getSheetByName('AUDITORIA');
+      if (!auditSheet) {
+        return ContentService.createTextOutput(JSON.stringify([]))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+
+      const rows = auditSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const items = rows.slice(1).map(row => {
+        let item = {};
+        headers.forEach((header, i) => {
+          item[header] = row[i];
+        });
+        return {
+          id: item.ID,
+          date: item.DATA,
+          user: item.USUARIO,
+          action: item.ACAO,
+          details: item.DETALHES
+        };
+      }).reverse(); // Most recent logs first
+
+      return ContentService.createTextOutput(JSON.stringify(items))
         .setMimeType(ContentService.MimeType.JSON);
     }
 

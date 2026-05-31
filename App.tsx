@@ -99,9 +99,46 @@ const App: React.FC = () => {
       headerLogoUrl1: undefined,
       headerLogoUrl2: undefined,
       printScale: 1.0,
-      googleSheetUrl: FIXED_GOOGLE_SHEET_URL
+      googleSheetUrl: FIXED_GOOGLE_SHEET_URL,
+      appName: 'CheckViatura Pro',
+      appDescription: 'Desenvolvido para gestão técnica de frotas de emergência e operacionais. Sistema resiliente de auditoria com reconstrução dinâmica de relatórios espelho e controle de acessos multinível.',
+      developedBy: 'Equipe de Gestão de Frotas'
     };
   });
+
+  const saveAuditLog = async (actionDesc: string, details: string) => {
+    const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+    const targetUrl = rawUrl?.trim();
+    if (!targetUrl) return;
+
+    let logUser = "VISITANTE";
+    if (currentUser) {
+      logUser = `${currentUser.rank || ''} ${currentUser.name || currentUser.username}`.trim();
+    } else if (data.signatureName) {
+      logUser = `VISITANTE: ${data.signatureRank || ''} ${data.signatureName} (VTR: ${data.prefix})`.trim().replace(/\s+/g, ' ');
+    }
+
+    const auditData = {
+      action: 'saveAuditLog',
+      id: crypto.randomUUID(),
+      date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
+      user: logUser,
+      actionLog: actionDesc,
+      details: details
+    };
+
+    try {
+      const targetUrlWithAction = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=saveAuditLog`;
+      await fetch(targetUrlWithAction, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(auditData)
+      });
+    } catch (err) {
+      console.warn("Erro ao salvar log de auditoria:", err);
+    }
+  };
 
   const [data, setData] = useState<InspectionData>(() => {
     const initialFreq = 'Diário';
@@ -386,6 +423,8 @@ const App: React.FC = () => {
     setSettings(newSettings);
     localStorage.setItem('checkviatura_settings', JSON.stringify(newSettings));
     
+    saveAuditLog('ALTERACAO_CONFIGURACOES', 'Usuário alterou as configurações do sistema');
+
     // Sincronização automática com Apps Script (Legado/Principal conforme pedido)
     await syncEntitiesToGoogleSheets(newSettings);
 
@@ -411,7 +450,7 @@ const App: React.FC = () => {
         username: 'cavalieri',
         name: 'Administrador Mestre',
         password: 'tricolor',
-        permissions: { checklist: true, reports: true, settings: true }
+        permissions: { checklist: true, reports: true, settings: true, admin: true }
       };
       setCurrentUser(superUser);
       setShowLoginModal(false);
@@ -425,12 +464,14 @@ const App: React.FC = () => {
       setShowLoginModal(false);
       setLoginUsername('');
       setLoginPassword('');
+      saveAuditLog('LOGIN', 'Usuário realizou login com sucesso');
     } else {
       alert('Usuário ou senha inválidos');
     }
   };
 
   const handleLogout = () => {
+    saveAuditLog('LOGOUT', 'Usuário realizou logout');
     setCurrentUser(null);
     setLoginUsername('');
     setLoginPassword('');
@@ -592,6 +633,7 @@ const App: React.FC = () => {
     setShowExportMenu(false);
     setIsSaving(true);
     await saveLogToGoogleSheets();
+    await saveAuditLog('CHECKLIST_FINALIZADO', `Checklist ${data.checklistType} finalizado para viatura ${data.prefix}`);
     
     // Se tiver token do Google Real, salva também na planilha real
     if (googleToken && settings.googleSpreadsheetId) {
@@ -650,6 +692,7 @@ const App: React.FC = () => {
           {view === 'settings' ? (
             <Settings 
               settings={settings} 
+              currentUser={currentUser}
               onSave={handleSaveSettings} 
               onClose={() => setView('checklist')} 
               initialTab={activeTabInSettings} 
