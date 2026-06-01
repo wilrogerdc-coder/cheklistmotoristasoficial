@@ -131,8 +131,8 @@ export interface AuditLog {
 export interface Justification {
   id: string;
   date: string;
-  type: 'DIARIO' | 'SEMANAL' | 'RETROATIVO';
-  vehicleType: VehicleType;
+  type: string;
+  vehicleType: string;
   station: string;
   justification: string;
   author: string;

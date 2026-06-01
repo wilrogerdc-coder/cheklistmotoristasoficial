@@ -680,6 +680,46 @@ const App: React.FC = () => {
       return;
     }
 
+    const today = new Date().toISOString().split('T')[0];
+    if (data.date !== today) {
+      const reason = prompt("ESTE CHECKLIST POSSUI DATA RETROATIVA.\n\nPor favor, informe o MOTIVO DO LANÇAMENTO RETROATIVO para fins de auditoria na Folha de Justificativas:", "");
+      if (!reason || reason.trim() === "") {
+        alert("BLOQUEIO: É obrigatório informar o motivo para lançamentos com data retroativa.");
+        return;
+      }
+      
+      // Salvar justificativa automaticamente
+      const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+      if (rawUrl) {
+         try {
+           const jData = {
+             action: "saveJustification",
+             id: crypto.randomUUID(),
+             date: data.date,
+             dateRef: data.date,
+             type: data.checklistType?.toUpperCase() || "GERAL",
+             vehicleType: data.prefix,
+             station: data.station || "",
+             justification: `[LANÇAMENTO RETROATIVO] ${reason}`,
+             author: `${data.signatureRank || ''} ${data.signatureName || ''}`.trim(),
+             authorRank: data.signatureRank || "CONFERENTE",
+             createdAt: new Date().toISOString(),
+             month: data.date.substring(0, 7),
+             status: "SIGNED"
+           };
+           
+           await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=saveJustification`, {
+             method: 'POST',
+             mode: 'no-cors',
+             body: JSON.stringify(jData)
+           });
+           console.log("Justificativa retroativa enviada com sucesso.");
+         } catch (err) {
+           console.warn("Erro ao enviar justificativa automática:", err);
+         }
+      }
+    }
+
     setPrintTimestamp(new Date().toLocaleString('pt-BR'));
     setShowExportMenu(false);
     setIsSaving(true);
@@ -746,6 +786,8 @@ const App: React.FC = () => {
               currentUser={currentUser}
               onSave={handleSaveSettings} 
               onClose={() => setView('checklist')} 
+              onExportModel={handleExportModel}
+              onImportModel={handleImportModel}
               initialTab={activeTabInSettings} 
               setCurrentUser={setCurrentUser}
               googleUser={googleUser}
@@ -1029,26 +1071,6 @@ const App: React.FC = () => {
 
             {view === 'checklist' && hasPermission('checklist') && (
               <>
-                <div className="w-px h-6 bg-gray-200 mx-1"></div>
-                
-                <button 
-                  onClick={handleExportModel} 
-                  className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-green-600 transition-colors"
-                  title="Exportar Salvar modelo"
-                >
-                  <Save className="w-5 h-5 text-green-500" />
-                  <span className="text-xs font-bold hidden sm:inline">Salvar Modelo</span>
-                </button>
-
-                <label 
-                  className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-purple-600 transition-colors cursor-pointer"
-                  title="Importar Modelo"
-                >
-                  <Upload className="w-5 h-5 text-purple-500" />
-                  <span className="text-xs font-bold hidden sm:inline">Importar</span>
-                  <input type="file" accept=".json" className="hidden" onChange={handleImportModel} />
-                </label>
-
                 <div className="w-px h-6 bg-gray-200 mx-1"></div>
                 
                 <button 

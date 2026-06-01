@@ -88,6 +88,8 @@ interface SettingsProps {
   currentUser: User | null;
   onSave: (newSettings: AppSettings) => void;
   onClose: () => void;
+  onExportModel: () => void;
+  onImportModel: (e: React.ChangeEvent<HTMLInputElement>) => void;
   initialTab?: 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login';
   setCurrentUser: (user: User | null) => void;
   googleUser: any;
@@ -103,6 +105,8 @@ export const Settings: React.FC<SettingsProps> = ({
   currentUser,
   onSave, 
   onClose, 
+  onExportModel,
+  onImportModel,
   initialTab = 'items',
   setCurrentUser,
   googleUser,
@@ -210,6 +214,8 @@ export const Settings: React.FC<SettingsProps> = ({
       vehicleImageRatios: s.vehicleImageRatios || ['landscape', 'landscape', 'landscape', 'landscape', 'landscape']
     };
   });
+  
+  const isMasterUser = !!currentUser && currentUser.username.toLowerCase() === 'cavalieri';
   
   const isSuperUser = !!currentUser && (
                       currentUser.username.toLowerCase() === 'cavalieri' || 
@@ -893,11 +899,15 @@ export const Settings: React.FC<SettingsProps> = ({
           <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors no-print"><ArrowLeft className="w-5 h-5" /></button>
           <h2 className="text-xl font-bold text-gray-800">Centro de Inteligência de Frota</h2>
         </div>
-        <button onClick={() => onSave(localSettings)} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold no-print shadow-lg">Aplicar Ajustes</button>
+        <div className="flex items-center gap-2 no-print">
+          <button onClick={() => onSave(localSettings)} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg">Aplicar Ajustes</button>
+        </div>
       </div>
 
       <nav className="flex gap-2 overflow-x-auto pb-2 no-print">
         {[
+          { id: 'reports', label: 'Relatórios', icon: FileText, permission: 'reports' },
+          { id: 'report_editor', label: 'Editor Relat.', icon: Edit2, permission: 'reports' },
           { id: 'manual', label: 'Manual', icon: BookOpen },
           { id: 'stations', label: 'Postos', icon: Navigation, permission: 'settings' },
           { id: 'vehicles', label: 'Viaturas', icon: Car, permission: 'settings' },
@@ -907,8 +917,6 @@ export const Settings: React.FC<SettingsProps> = ({
           { id: 'style', label: 'Estilo', icon: Palette, permission: 'settings' },
           { id: 'admin', label: 'Auditoria', icon: Lock, permission: 'admin' },
           { id: 'cloud', label: 'Nuvem', icon: Cloud, superOnly: true },
-          { id: 'report_editor', label: 'Editor Relat.', icon: Edit2, permission: 'reports' },
-          { id: 'reports', label: 'Relatórios', icon: FileText, permission: 'reports' },
           { id: 'about', label: 'SOBRE', icon: Info },
           ...(!isSettingsUnlocked ? [{ id: 'login', label: 'Entrar nos Ajustes', icon: Lock }] : [])
         ].filter(tab => isTabAccessible(tab.id)).map(tab => (
@@ -2117,8 +2125,8 @@ export const Settings: React.FC<SettingsProps> = ({
                   value={localSettings.appName || 'CHECKLIST VIATURA'} 
                   onChange={e => setLocalSettings({...localSettings, appName: e.target.value})} 
                   placeholder="NOME DO SISTEMA"
-                  readOnly={!isSuperUser}
-                  className={`w-full border-2 rounded-2xl p-4 text-center text-xl font-black uppercase outline-none transition-all ${!isSuperUser ? 'bg-gray-50 border-gray-100 text-gray-400' : 'focus:border-blue-500'}`}
+                  readOnly={!isMasterUser}
+                  className={`w-full border-2 rounded-2xl p-4 text-center text-xl font-black uppercase outline-none transition-all ${!isMasterUser ? 'bg-gray-50 border-gray-100 text-gray-400' : 'focus:border-blue-500'}`}
                 />
               </div>
 
@@ -2129,8 +2137,8 @@ export const Settings: React.FC<SettingsProps> = ({
                   onChange={e => setLocalSettings({...localSettings, appDescription: e.target.value})} 
                   placeholder="DESCRIÇÃO DO SISTEMA"
                   rows={4}
-                  readOnly={!isSuperUser}
-                  className={`w-full border-2 rounded-2xl p-4 text-[11px] font-medium leading-relaxed outline-none transition-all resize-none ${!isSuperUser ? 'bg-gray-50 border-gray-100 text-gray-300' : 'text-gray-500 focus:border-blue-500'}`}
+                  readOnly={!isMasterUser}
+                  className={`w-full border-2 rounded-2xl p-4 text-[11px] font-medium leading-relaxed outline-none transition-all resize-none ${!isMasterUser ? 'bg-gray-50 border-gray-100 text-gray-300' : 'text-gray-500 focus:border-blue-500'}`}
                 />
               </div>
 

@@ -104,9 +104,11 @@ export const Reports: React.FC<ReportsProps> = ({
     } catch (e) {}
   };
 
-  const getSignature = (roleId: string) => {
+  const getSignature = (roleId: string, customReportType?: string) => {
     const prefix = Array.from(selectedPrefixes)[0];
     if (!prefix || !monthFilter) return null;
+
+    const reportTypeToUse = customReportType || activeReport;
 
     const sigLog = monthClosures.find((c) => {
       const details = c.details || "";
@@ -114,7 +116,8 @@ export const Reports: React.FC<ReportsProps> = ({
         c.action === "ASSINATURA_DIVERSA" &&
         details.includes(`MONTH: ${monthFilter}`) &&
         details.includes(`VTR: ${prefix}`) &&
-        details.includes(`ROLE: ${roleId}`)
+        details.includes(`ROLE: ${roleId}`) &&
+        (reportTypeToUse ? details.includes(`REPORT: ${reportTypeToUse}`) : true)
       );
     });
 
@@ -236,7 +239,7 @@ export const Reports: React.FC<ReportsProps> = ({
         }),
         user: `${user.rank || ""} ${user.name || user.username}`.trim(),
         actionLog: "ASSINATURA_DIVERSA",
-        details: `SIGNATURE | MONTH: ${monthFilter} | VTR: ${prefix} | ROLE: ${signatureRole.id} | SIGNED_BY: ${user.rank || ""} ${user.name || user.username}`,
+        details: `SIGNATURE | MONTH: ${monthFilter} | VTR: ${prefix} | ROLE: ${signatureRole.id} | REPORT: ${activeReport} | SIGNED_BY: ${user.rank || ""} ${user.name || user.username}`,
       };
 
       await fetch(rawUrl, {
@@ -305,6 +308,7 @@ export const Reports: React.FC<ReportsProps> = ({
   useEffect(() => {
     if (activeReport && monthFilter && selectedPrefixes.size > 0) {
       fetchMonthClosures();
+      fetchJustifications();
     }
   }, [activeReport, monthFilter, selectedPrefixes]);
 
@@ -836,14 +840,24 @@ export const Reports: React.FC<ReportsProps> = ({
 
     const logsByDay: Record<number, LogEntry> = {};
     filteredLogs.forEach((log) => {
-      const d = new Date(log.date);
-      if (d.getFullYear() === year && d.getMonth() + 1 === month) {
-        const dd = d.getDate();
-        if (
-          !logsByDay[dd] ||
-          new Date(log.date).getTime() > new Date(logsByDay[dd].date).getTime()
-        ) {
-          logsByDay[dd] = log;
+      if (parseLogDateToMonth(log.date) === monthFilter) {
+        let dd = 0;
+        const dateStr = String(log.date);
+        if (dateStr.includes("-")) {
+          const parts = dateStr.split("T")[0].split("-");
+          if (parts.length === 3) dd = parseInt(parts[2]);
+        } else if (dateStr.includes("/")) {
+          const parts = dateStr.split("/");
+          if (parts.length >= 1) dd = parseInt(parts[0]);
+        }
+
+        if (dd > 0) {
+          if (
+            !logsByDay[dd] ||
+            new Date(log.date).getTime() > new Date(logsByDay[dd].date).getTime()
+          ) {
+            logsByDay[dd] = log;
+          }
         }
       }
     });
@@ -1000,20 +1014,8 @@ export const Reports: React.FC<ReportsProps> = ({
                       : { val: "", colorClass: "" };
 
                     if (!log) {
-                      // Se não tem log, verificar se tem justificativa
-                      const dayStr = `${year}-${month.toString().padStart(2, "0")}-${d.toString().padStart(2, "0")}`;
-                      const hasJustification = justifications.some(
-                        (j) =>
-                          j.month === monthFilter &&
-                          normalizePrefix(j.vehicleType) ===
-                            normalizePrefix(selectedPrefix) &&
-                          (j.date.startsWith(dayStr) ||
-                            new Date(j.date).getDate() === d),
-                      );
-                      if (hasJustification) {
-                        val = "JS";
-                        colorClass = "text-purple-600 bg-purple-50";
-                      }
+                      // Remoção da verificação de justificativa na Ficha de Controle Diário
+                      // conforme solicitação do usuário para manter apenas na Folha de Justificativas
                     }
                     return (
                       <td
@@ -1057,8 +1059,7 @@ export const Reports: React.FC<ReportsProps> = ({
                         j.month === monthFilter &&
                         normalizePrefix(j.vehicleType) ===
                           normalizePrefix(selectedPrefix) &&
-                        (j.date.startsWith(dayStr) ||
-                          new Date(j.date).getDate() === d),
+                        String(j.date).startsWith(dayStr),
                     );
                     if (justification) {
                       return (
@@ -1109,8 +1110,7 @@ export const Reports: React.FC<ReportsProps> = ({
                         j.month === monthFilter &&
                         normalizePrefix(j.vehicleType) ===
                           normalizePrefix(selectedPrefix) &&
-                        (j.date.startsWith(dayStr) ||
-                          new Date(j.date).getDate() === d),
+                        String(j.date).startsWith(dayStr),
                     );
                     if (justification) {
                       return (
@@ -1278,81 +1278,6 @@ export const Reports: React.FC<ReportsProps> = ({
                     </div>
                   );
                 })}
-              </div>
-            </div>
-
-            {/* Final Signature Row */}
-            <div className="grid grid-cols-2 mt-4 gap-4 items-end">
-              <div
-                onClick={() =>
-                  handleTriggerSignature("CMT_POSTO", "COMANDANTE DO POSTO")
-                }
-                className="border-t border-black pt-1 text-center cursor-pointer hover:bg-gray-50 rounded p-1 transition-colors flex flex-col items-center justify-center min-h-[46px]"
-              >
-                {(() => {
-                  const sig = getSignature("CMT_POSTO");
-                  if (sig) {
-                    return (
-                      <div className="mb-1 text-green-600 flex flex-col items-center">
-                        <CheckCircle className="w-3.5 h-3.5 mb-0.5" />
-                        <p className="text-[6px] font-black uppercase leading-tight">
-                          {sig.user}
-                        </p>
-                        <p className="text-[5px] opacity-70 leading-normal">
-                          {sig.date.split(",")[0]}
-                        </p>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleTriggerSignature("CMT_POSTO", "COMANDANTE DO POSTO");
-                      }}
-                      className="mb-1.5 px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 hover:text-purple-800 rounded text-[6px] font-black uppercase no-print transition-all active:scale-95 flex items-center gap-1 mx-auto border border-purple-200 shadow-sm cursor-pointer"
-                    >
-                      <Lock className="w-2.5 h-2.5 text-purple-500" /> + ASSINAR DIGITAL
-                    </div>
-                  );
-                })()}
-                <span className="block font-black text-[8px]">CMT POSTO</span>
-              </div>
-
-              <div
-                onClick={() =>
-                  handleTriggerSignature("CMT_SGB", "COMANDANTE DO SGB")
-                }
-                className="border-t border-black pt-1 text-center cursor-pointer hover:bg-gray-50 rounded p-1 transition-colors flex flex-col items-center justify-center min-h-[46px]"
-              >
-                {(() => {
-                  const sig = getSignature("CMT_SGB");
-                  if (sig) {
-                    return (
-                      <div className="mb-1 text-green-600 flex flex-col items-center">
-                        <CheckCircle className="w-3.5 h-3.5 mb-0.5" />
-                        <p className="text-[6px] font-black uppercase leading-tight">
-                          {sig.user}
-                        </p>
-                        <p className="text-[5px] opacity-70 leading-normal">
-                          {sig.date.split(",")[0]}
-                        </p>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleTriggerSignature("CMT_SGB", "COMANDANTE DO SGB");
-                      }}
-                      className="mb-2 px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 hover:text-purple-800 rounded text-[6px] font-black uppercase no-print transition-all active:scale-95 flex items-center gap-1 mx-auto border border-purple-200 shadow-sm cursor-pointer"
-                    >
-                      <Lock className="w-2.5 h-2.5 text-purple-500" /> + ASSINAR DIGITAL
-                    </div>
-                  );
-                })()}
-                <span className="block font-black text-[8px]">CMT S/GB</span>
               </div>
             </div>
 
@@ -1614,23 +1539,36 @@ export const Reports: React.FC<ReportsProps> = ({
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               {[
-                "CH DOS MOTORISTAS AMARELA",
-                "CH DOS MOTORISTAS AZUL",
-                "CH DOS MOTORISTAS VERDE",
-              ].map((l) => (
-                <div key={l} className="flex border border-black">
-                  <div className="flex-1 px-1">{l}</div>
-                  <div className="w-10 border-l border-black"></div>
-                </div>
-              ))}
+                { id: "CH_MOTORISTAS_AMARELA", label: "CH DOS MOTORISTAS AMARELA" },
+                { id: "CH_MOTORISTAS_AZUL", label: "CH DOS MOTORISTAS AZUL" },
+                { id: "CH_MOTORISTAS_VERDE", label: "CH DOS MOTORISTAS VERDE" },
+              ].map((role) => {
+                const sig = getSignature(role.id);
+                return (
+                  <div 
+                    key={role.id} 
+                    onClick={() => handleTriggerSignature(role.id, role.label)}
+                    className="flex border border-black cursor-pointer hover:bg-gray-50 transition-colors h-4 items-center"
+                  >
+                    <div className="flex-1 px-1 text-[7px] uppercase">{role.label}</div>
+                    <div className="w-16 border-l border-black text-center text-[6px] font-black text-blue-600">
+                      {sig ? sig.user : (
+                        <span 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleTriggerSignature(role.id, role.label);
+                          }}
+                          className="text-purple-600 bg-purple-50 px-1 py-0.5 rounded cursor-pointer no-print font-black"
+                        >
+                          + ASSINAR
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
             <div className="space-y-1">
-              <div className="flex border border-black h-8 items-end px-1">
-                CMT POSTO
-              </div>
-              <div className="flex border border-black h-8 items-end px-1">
-                CMT S/GB
-              </div>
             </div>
           </div>
         </div>
@@ -1690,14 +1628,24 @@ export const Reports: React.FC<ReportsProps> = ({
 
     const logsByDay: Record<number, LogEntry> = {};
     filteredLogs.forEach((log) => {
-      const logDate = new Date(log.date);
-      if (logDate.getFullYear() === year && logDate.getMonth() + 1 === month) {
-        const day = logDate.getDate();
-        if (
-          !logsByDay[day] ||
-          new Date(log.date).getTime() > new Date(logsByDay[day].date).getTime()
-        ) {
-          logsByDay[day] = log;
+      if (parseLogDateToMonth(log.date) === monthFilter) {
+        let dd = 0;
+        const dateStr = String(log.date);
+        if (dateStr.includes("-")) {
+          const parts = dateStr.split("T")[0].split("-");
+          if (parts.length === 3) dd = parseInt(parts[2]);
+        } else if (dateStr.includes("/")) {
+          const parts = dateStr.split("/");
+          if (parts.length >= 1) dd = parseInt(parts[0]);
+        }
+
+        if (dd > 0) {
+          if (
+            !logsByDay[dd] ||
+            new Date(log.date).getTime() > new Date(logsByDay[dd].date).getTime()
+          ) {
+            logsByDay[dd] = log;
+          }
         }
       }
     });
@@ -1867,20 +1815,7 @@ export const Reports: React.FC<ReportsProps> = ({
                     : { val: "", colorClass: "" };
 
                   if (!log) {
-                    // Justificativa
-                    const dayStr = `${year}-${month.toString().padStart(2, "0")}-${d.toString().padStart(2, "0")}`;
-                    const hasJustification = justifications.some(
-                      (j) =>
-                        j.month === monthFilter &&
-                        normalizePrefix(j.vehicleType) ===
-                          normalizePrefix(selectedPrefix) &&
-                        (j.date.startsWith(dayStr) ||
-                          new Date(j.date).getDate() === d),
-                    );
-                    if (hasJustification) {
-                      val = "JS";
-                      colorClass = "text-purple-600 bg-purple-50";
-                    }
+                    // Remoção da verificação de justificativa na Ficha de Controle de Motos
                   }
                   return (
                     <td
@@ -1923,8 +1858,7 @@ export const Reports: React.FC<ReportsProps> = ({
                       j.month === monthFilter &&
                       normalizePrefix(j.vehicleType) ===
                         normalizePrefix(selectedPrefix) &&
-                      (j.date.startsWith(dayStr) ||
-                        new Date(j.date).getDate() === d),
+                      String(j.date).startsWith(dayStr),
                   );
                   if (justification) {
                     return (
@@ -1972,8 +1906,7 @@ export const Reports: React.FC<ReportsProps> = ({
                       j.month === monthFilter &&
                       normalizePrefix(j.vehicleType) ===
                         normalizePrefix(selectedPrefix) &&
-                      (j.date.startsWith(dayStr) ||
-                        new Date(j.date).getDate() === d),
+                      String(j.date).startsWith(dayStr),
                   );
                   if (justification) {
                     return (
@@ -2141,93 +2074,6 @@ export const Reports: React.FC<ReportsProps> = ({
               })}
             </div>
           </div>
-
-          {/* Final Signature Row */}
-          <div className="grid grid-cols-2 mt-4 gap-4 items-end">
-            <div
-              onClick={() =>
-                handleTriggerSignature(
-                  "CMT_POSTO_MOTO",
-                  "COMANDANTE DO POSTO (MOTOS)",
-                )
-              }
-              className="border-t border-black pt-1 text-center cursor-pointer hover:bg-gray-50 rounded p-1 transition-colors flex flex-col items-center justify-center min-h-[46px]"
-            >
-              {(() => {
-                const sig = getSignature("CMT_POSTO_MOTO");
-                if (sig) {
-                  return (
-                    <div className="mb-1 text-green-600 flex flex-col items-center">
-                      <CheckCircle className="w-3.5 h-3.5 mb-0.5" />
-                      <p className="text-[6px] font-black uppercase leading-tight">
-                        {sig.user}
-                      </p>
-                      <p className="text-[5px] opacity-70 leading-normal">
-                        {sig.date.split(",")[0]}
-                      </p>
-                    </div>
-                  );
-                }
-                return (
-                  <div 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleTriggerSignature(
-                        "CMT_POSTO_MOTO",
-                        "COMANDANTE DO POSTO (MOTOS)",
-                      );
-                    }}
-                    className="mb-1.5 px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 hover:text-purple-800 rounded text-[6px] font-black uppercase no-print transition-all active:scale-95 flex items-center gap-1 mx-auto border border-purple-200 shadow-sm cursor-pointer"
-                  >
-                    <Lock className="w-2.5 h-2.5 text-purple-500" /> + ASSINAR DIGITAL
-                  </div>
-                );
-              })()}
-              <span className="block font-black text-[8px]">CMT POSTO</span>
-            </div>
-
-            <div
-              onClick={() =>
-                handleTriggerSignature(
-                  "CMT_SGB_MOTO",
-                  "COMANDANTE DO SGB (MOTOS)",
-                )
-              }
-              className="border-t border-black pt-1 text-center cursor-pointer hover:bg-gray-50 rounded p-1 transition-colors flex flex-col items-center justify-center min-h-[46px]"
-            >
-              {(() => {
-                const sig = getSignature("CMT_SGB_MOTO");
-                if (sig) {
-                  return (
-                    <div className="mb-1 text-green-600 flex flex-col items-center">
-                      <CheckCircle className="w-3.5 h-3.5 mb-0.5" />
-                      <p className="text-[6px] font-black uppercase leading-tight">
-                        {sig.user}
-                      </p>
-                      <p className="text-[5px] opacity-70 leading-normal">
-                        {sig.date.split(",")[0]}
-                      </p>
-                    </div>
-                  );
-                }
-                return (
-                  <div 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleTriggerSignature(
-                        "CMT_SGB_MOTO",
-                        "COMANDANTE DO SGB (MOTOS)",
-                      );
-                    }}
-                    className="mb-2 px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 hover:text-purple-800 rounded text-[6px] font-black uppercase no-print transition-all active:scale-95 flex items-center gap-1 mx-auto border border-purple-200 shadow-sm cursor-pointer"
-                  >
-                    <Lock className="w-2.5 h-2.5 text-purple-500" /> + ASSINAR DIGITAL
-                  </div>
-                );
-              })()}
-              <span className="block font-black text-[8px]">CMT S/GB</span>
-            </div>
-          </div>
         </div>
         {renderJustificationSheet("DIÁRIO MOTOS", selectedPrefix, monthFilter)}
       </div>
@@ -2242,29 +2088,75 @@ export const Reports: React.FC<ReportsProps> = ({
     const [year, monthNum] = month.split("-").map(Number);
     const daysInMonth = new Date(year, monthNum, 0).getDate();
 
-    // Find missing days
-    const existingDays = new Set<number>();
+    // Find logs per day
+    const logsByDay: Record<number, LogEntry> = {};
     logs
       .filter(
-        (log) => normalizePrefix(log.prefix) === normalizePrefix(vehiclePrefix),
+        (log) => 
+          normalizePrefix(log.prefix) === normalizePrefix(vehiclePrefix) ||
+          normalizePrefix(log.plate) === normalizePrefix(vehiclePrefix)
       )
       .forEach((log) => {
-        const d = new Date(log.date);
-        if (d.getFullYear() === year && d.getMonth() + 1 === monthNum) {
-          existingDays.add(d.getDate());
+        if (parseLogDateToMonth(log.date) === month) {
+          let dayValue = 0;
+          const dateStr = String(log.date);
+          if (dateStr.includes("-")) {
+            const parts = dateStr.split("T")[0].split("-");
+            if (parts.length === 3) dayValue = parseInt(parts[2]);
+          } else if (dateStr.includes("/")) {
+            const parts = dateStr.split("/");
+            if (parts.length >= 1) dayValue = parseInt(parts[0]);
+          }
+
+          if (dayValue > 0) {
+            if (
+              !logsByDay[dayValue] ||
+              new Date(log.date).getTime() >
+                new Date(logsByDay[dayValue].date).getTime()
+            ) {
+              logsByDay[dayValue] = log;
+            }
+          }
         }
       });
 
-    const missingDays = Array.from(
-      { length: daysInMonth },
-      (_, i) => i + 1,
-    ).filter((d) => !existingDays.has(d));
+    const existingDays = new Set<number>(
+      Object.keys(logsByDay).map((k) => parseInt(k)),
+    );
 
     const reportJustifications = justifications.filter(
-      (j) =>
-        j.month === month &&
-        (normalizePrefix(j.vehicleType) === normalizePrefix(vehiclePrefix) ||
-          normalizePrefix(j.station) === normalizePrefix(vehiclePrefix)),
+      (j) => {
+        // Month match - Be very permissive
+        const jDate = (j.date || (j as any).dateRef || "").toString();
+        const jMonth = j.month || (jDate ? parseLogDateToMonth(jDate) : "");
+        const matchesMonth = !month || jMonth === month;
+        
+        // Prefix/Vehicle match - Normalize both sides
+        const targetNormalized = normalizePrefix(vehiclePrefix);
+        const matchesPrefix = 
+          normalizePrefix(j.vehicleType) === targetNormalized ||
+          normalizePrefix(j.station) === targetNormalized;
+        
+        // Type match (Fuzzy)
+        const typeMap: Record<string, string[]> = {
+          "daily_control": ["DIÁRIO", "DIARIO", "daily_control", "DAILY"],
+          "daily_control_motos": ["DIÁRIO MOTOS", "DIARIO MOTOS", "daily_control_motos", "daily_motos", "DIÁRIO", "DIARIO"],
+          "weekly_leves": ["SEMANAL", "weekly_leves", "WEEKLY"],
+          "weekly_motos": ["SEMANAL", "weekly_motos", "WEEKLY"],
+          "weekly_ab": ["SEMANAL", "weekly_ab", "WEEKLY"],
+        };
+        
+        const validTypes = ["GERAL", "Geral", "ANY", "", undefined, null];
+        if (activeReport && typeMap[activeReport]) validTypes.push(...typeMap[activeReport]);
+        if (type) validTypes.push(type);
+
+        const jTypeUpper = String(j.type || "").toUpperCase().trim();
+        const matchesType = jTypeUpper === "" || jTypeUpper === "GERAL" || validTypes.some(vt => 
+          String(vt || "").toUpperCase().trim() === jTypeUpper
+        );
+
+        return matchesMonth && (matchesPrefix || !targetNormalized) && matchesType;
+      }
     );
 
     return (
@@ -2290,111 +2182,226 @@ export const Reports: React.FC<ReportsProps> = ({
             <table className="w-full text-[8px] border-collapse">
               <thead>
                 <tr className="bg-gray-50 border-b border-black">
-                  <th className="w-16 border-r border-black p-1">DIA</th>
-                  <th className="flex-1 p-1 text-left">JUSTIFICATIVA</th>
-                  <th className="w-48 border-l border-black p-1 text-left">
+                  <th className="w-16 border-r border-black p-1 font-black">DIA</th>
+                  <th className="w-24 border-r border-black p-1 font-black text-center">STATUS</th>
+                  <th className="flex-1 p-1 text-left font-black">JUSTIFICATIVA / MOTIVO</th>
+                  <th className="w-48 border-l border-black p-1 text-left font-black">
                     RESPONSÁVEL (CHEFE MOTORISTAS)
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {missingDays.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={3}
-                      className="p-4 text-center text-gray-400 font-bold uppercase italic border-b border-black"
-                    >
-                      Nenhuma ausência de registro detectada para este período.
-                    </td>
-                  </tr>
-                )}
-                {missingDays.map((day) => {
-                  const dayStr = `${year}-${monthNum.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-                  const justification = reportJustifications.find(
-                    (j) =>
-                      j.date.startsWith(dayStr) ||
-                      new Date(j.date).getDate() === day,
-                  );
-                  return (
-                    <tr key={day} className="border-b border-black h-8">
-                      <td className="border-r border-black p-1 text-center font-black">
-                        {day.toString().padStart(2, "0")}
-                      </td>
-                      <td className="p-1 uppercase">
-                        {justification?.justification || "-"}
-                      </td>
-                      <td className="border-l border-black p-1 flex flex-col justify-center">
-                        <span className="font-black">
-                          {justification?.author || "________________________"}
-                        </span>
-                        <span className="text-[7px] text-gray-400">
-                          {justification
-                            ? `RE: ${justification.authorRank}`
-                            : "ASSINATURA / RE"}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {Array.from({ length: daysInMonth }, (_, i) => i + 1)
+                  .map((day) => {
+                    const dayStrFormatted = `${year}-${monthNum.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+                    const justification = reportJustifications.find((j) => {
+                      const jDateVal = j.date || (j as any).dateRef;
+                      if (!jDateVal) return false;
+                      const dateStr = String(jDateVal);
+                      let jYear = 0,
+                        jMonth = 0,
+                        jDay = 0;
+
+                      if (dateStr.includes("-")) {
+                        const parts = dateStr.split("T")[0].split("-");
+                        if (parts.length === 3) {
+                          jYear = parseInt(parts[0]);
+                          jMonth = parseInt(parts[1]);
+                          jDay = parseInt(parts[2]);
+                        }
+                      } else if (dateStr.includes("/")) {
+                        const parts = dateStr.split("/");
+                        if (parts.length >= 3) {
+                          jDay = parseInt(parts[0]);
+                          jMonth = parseInt(parts[1]);
+                          jYear = parseInt(parts[2].split(" ")[0]);
+                        }
+                      }
+
+                      return jYear === year && jMonth === monthNum && jDay === day;
+                    });
+                    const hasLog = existingDays.has(day);
+                    return { day, dayStr: dayStrFormatted, justification, hasLog };
+                  })
+                  .filter((item) => !item.hasLog || !!item.justification)
+                  .map(({ day, dayStr, justification, hasLog }) => {
+                    return (
+                      <tr 
+                        key={day} 
+                        className={`border-b border-black h-8 transition-colors ${!hasLog && !justification ? 'bg-red-50/30 cursor-pointer hover:bg-purple-50/50' : 'hover:bg-gray-50'}`}
+                        onClick={() => {
+                          const prefix = Array.from(selectedPrefixes)[0];
+                          const existing = justifications.find(
+                            (j) =>
+                              String(j.date).startsWith(dayStr) &&
+                              normalizePrefix(j.vehicleType) === normalizePrefix(prefix)
+                          );
+
+                          setNewJustification({
+                            ...newJustification,
+                            date: dayStr,
+                            justification: existing ? existing.justification : ""
+                          });
+                          setShowJustificationModal(true);
+                        }}
+                      >
+                        <td className="border-r border-black p-1 text-center font-black">
+                          {day.toString().padStart(2, "0")}
+                        </td>
+                        <td className="border-r border-black p-1 text-center font-black">
+                          {hasLog ? (
+                            <span className="text-green-600">LANÇ. RETROATIVO</span>
+                          ) : (
+                            <span className={`${justification ? 'text-purple-600' : 'text-red-600'}`}>
+                              {justification ? 'JUSTIFICADO' : 'AUSENTE'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="border-r border-black p-1 uppercase font-medium text-[8px] leading-tight relative group">
+                          {justification?.justification ? (
+                            <div className="flex flex-col gap-0.5">
+                              {hasLog && (
+                                <span className="text-blue-700 font-black flex items-center gap-1">
+                                  <AlertCircle className="w-2.5 h-2.5" /> LANÇAMENTO RETROATIVO
+                                </span>
+                              )}
+                              <span className="text-gray-900 font-bold whitespace-pre-wrap">
+                                {justification.justification}
+                              </span>
+                            </div>
+                          ) : !hasLog ? (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-red-500 font-bold">CHECKLIST NÃO REALIZADO</span>
+                              <button className="no-print bg-purple-600 text-white px-2 py-0.5 rounded text-[7px] font-black uppercase transition-all shadow-sm">
+                                + JUSTIFICAR
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-blue-700 font-black flex items-center gap-1">
+                                <AlertCircle className="w-2.5 h-2.5" /> LANÇAMENTO RETROATIVO
+                              </span>
+                              <span className="text-gray-400 italic">SEM JUSTIFICATIVA ADICIONAL</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-1 flex flex-col justify-center min-h-[32px]">
+                          <span className="font-black text-[7.5px] uppercase">
+                            {justification?.author ||
+                              (hasLog
+                                ? logsByDay[day]?.inspector ||
+                                  logsByDay[day]?.Inspetor ||
+                                  "SISTEMA CHECKVIATURA"
+                                : "Pendente de Assinatura")}
+                          </span>
+                          <span className="text-[6.5px] text-gray-500 font-bold uppercase mt-0.5">
+                            {justification ? (
+                              `RE: ${justification.authorRank}`
+                            ) : hasLog ? (
+                              `RE: ${logsByDay[day]?.plate?.includes("RE ") ? logsByDay[day]?.plate : "REGISTRO ELETRÔNICO"}`
+                            ) : (
+                              "RESPONSÁVEL / RE"
+                            )}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 mt-8">
-            <div className="border border-black p-2 min-h-[80px]">
-              <p className="text-[8px] font-black uppercase mb-1">
-                CIÊNCIA DOS CHEFES DOS MOTORISTAS (ENCERRAMENTO MENSAL):
-              </p>
-              <div className="grid grid-cols-3 gap-8 mt-4">
-                {[
-                  { id: "CH_MOTORISTAS_AMARELA", label: "AMARELA" },
-                  { id: "CH_MOTORISTAS_AZUL", label: "AZUL" },
-                  { id: "CH_MOTORISTAS_VERDE", label: "VERDE" },
-                ].map((role) => {
-                  const sig = getSignature(role.id);
-                  return (
-                    <div
-                      key={role.id}
-                      onClick={() =>
-                        handleTriggerSignature(
-                          role.id,
-                          `CHEFE DOS MOTORISTAS - ${role.label}`,
-                        )
-                      }
-                      className="border-t border-black text-center pt-1 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 rounded transition-colors min-h-[36px]"
-                    >
-                      {sig ? (
-                        <div className="text-green-600 text-[6.5px] font-black uppercase mb-0.5">
-                          <CheckCircle className="w-3 h-3 mx-auto mb-0.5 inline-block" />
-                          <p className="leading-tight">{sig.user}</p>
-                          <p className="text-[5px] text-gray-400 font-normal mt-0.5 leading-none">
-                            {sig.date.split(",")[0]}
-                          </p>
-                        </div>
-                      ) : (
-                        <span 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleTriggerSignature(
-                              role.id,
-                              `CHEFE DOS MOTORISTAS - ${role.label}`,
-                            );
-                          }}
-                          className="text-[6px] text-purple-600 bg-purple-50 px-1.5 py-0.5 hover:bg-purple-100 rounded font-black no-print transition-all mb-1 cursor-pointer"
-                        >
-                          + ASSINAR
-                        </span>
-                      )}
-                      <span className="text-[8px] font-black uppercase">
-                        {role.label}
-                      </span>
-                    </div>
-                  );
-                })}
+          <div className="mt-6 grid grid-cols-4 gap-4">
+            <div className="space-y-1">
+              <div className="bg-gray-100 border border-black p-1 text-[8px] font-black uppercase text-center">
+                Chefe Motoristas
               </div>
+              {[
+                { id: "CH_MOTORISTAS_AMARELA", label: "AMARELA" },
+                { id: "CH_MOTORISTAS_AZUL", label: "AZUL" },
+                { id: "CH_MOTORISTAS_VERDE", label: "VERDE" },
+              ].map((role) => {
+                const sig = getSignature(role.id, activeReport || type);
+                return (
+                  <div 
+                    key={role.id} 
+                    onClick={() => handleTriggerSignature(role.id, `CHEFE MOTORISTAS ${role.label}`)}
+                    className="flex border border-black h-5 items-center cursor-pointer hover:bg-gray-50 transition-all font-black"
+                  >
+                    <div className="w-12 border-r border-black px-1 text-[6.5px]">{role.label}</div>
+                    <div className="flex-1 px-1 text-[6.5px] text-blue-600 text-center truncate">
+                      {sig ? sig.user : <span className="text-purple-600 no-print">+ ASSINAR</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="space-y-1">
+              <div className="bg-gray-100 border border-black p-1 text-[8px] font-black uppercase text-center">
+                Cmt Prontidão
+              </div>
+              {[
+                { id: "CMT_PRONTIDAO_AMARELA", label: "AMARELA" },
+                { id: "CMT_PRONTIDAO_AZUL", label: "AZUL" },
+                { id: "CMT_PRONTIDAO_VERDE", label: "VERDE" },
+              ].map((role) => {
+                const sig = getSignature(role.id, activeReport || type);
+                return (
+                  <div 
+                    key={role.id} 
+                    onClick={() => handleTriggerSignature(role.id, `CMT PRONTIDÃO ${role.label}`)}
+                    className="flex border border-black h-5 items-center cursor-pointer hover:bg-gray-50 transition-all font-black"
+                  >
+                    <div className="w-12 border-r border-black px-1 text-[6.5px]">{role.label}</div>
+                    <div className="flex-1 px-1 text-[6.5px] text-blue-600 text-center truncate">
+                      {sig ? sig.user : <span className="text-purple-600 no-print">+ ASSINAR</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="space-y-1">
+              <div className="bg-gray-100 border border-black p-1 text-[8px] font-black uppercase text-center">
+                Comandante Posto
+              </div>
+              {[{ id: "CMT_POSTO", label: "CMT POSTO" }].map((role) => {
+                const sig = getSignature(role.id, activeReport || type);
+                return (
+                  <div 
+                    key={role.id} 
+                    onClick={() => handleTriggerSignature(role.id, role.label)}
+                    className="flex border border-black h-5 items-center cursor-pointer hover:bg-gray-50 transition-all font-black"
+                  >
+                    <div className="flex-1 px-1 text-[6.5px] text-blue-600 text-center truncate italic">
+                      {sig ? sig.user : <span className="text-purple-600 no-print">+ ASSINAR</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="space-y-1">
+              <div className="bg-gray-100 border border-black p-1 text-[8px] font-black uppercase text-center">
+                Comandante SGB
+              </div>
+              {[{ id: "CMT_SGB", label: "CMT SGB" }].map((role) => {
+                const sig = getSignature(role.id, activeReport || type);
+                return (
+                  <div 
+                    key={role.id} 
+                    onClick={() => handleTriggerSignature(role.id, role.label)}
+                    className="flex border border-black h-5 items-center cursor-pointer hover:bg-gray-50 transition-all font-black"
+                  >
+                    <div className="flex-1 px-1 text-[6.5px] text-blue-600 text-center truncate italic">
+                      {sig ? sig.user : <span className="text-purple-600 no-print">+ ASSINAR</span>}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
-
         </div>
       </div>
     );
@@ -3198,6 +3205,281 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   };
 
+  const renderSharedModals = () => (
+    <>
+      {showClosureModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-sm rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300">
+            <div className="bg-blue-600 p-6 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Lock className="w-5 h-5" />
+                <h3 className="font-black text-xs uppercase tracking-widest">
+                  Encerramento Mensal
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowClosureModal(false)}
+                className="p-2 hover:bg-white/20 rounded-full transition-colors"
+                disabled={isClosingMonth}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-8 space-y-6">
+              <div className="text-center space-y-2">
+                <ShieldCheck className="w-12 h-12 text-blue-600 mx-auto" />
+                <p className="text-[10px] font-bold text-gray-400 uppercase leading-relaxed">
+                  Esta ação encerrará oficialmente as folhas de {monthFilter}{" "}
+                  para a viatura {Array.from(selectedPrefixes)[0]}. Esta
+                  assinatura é digital e será registrada na auditoria.
+                </p>
+              </div>
+
+              {closureError && (
+                <div className="p-4 bg-red-50 border-2 border-red-200 rounded-2xl text-center space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                  <p className="text-[10px] font-black text-red-700 leading-normal uppercase">
+                    {closureError}
+                  </p>
+                  {closureError.includes("Acesso Negado") && (
+                    <a
+                      href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                        `Olá! Sou militar operacional do posto e gostaria de solicitar ao Administrador a permissão de Fechamento Mensal (Chefe dos Motoristas) para o meu usuário '${closureAuth.username}' no CheckViatura Pro.`
+                      )}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white font-black rounded-lg text-[9px] uppercase tracking-wider transition-all w-full"
+                    >
+                      Solicitar Permissão
+                    </a>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-500 uppercase ml-1">
+                    Usuário
+                  </label>
+                  <input
+                    type="text"
+                    value={closureAuth.username}
+                    onChange={(e) =>
+                      setClosureAuth({
+                        ...closureAuth,
+                        username: e.target.value,
+                      })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleMonthClosure();
+                    }}
+                    placeholder="USUÁRIO"
+                    className="w-full border-2 rounded-2xl p-4 text-center font-black uppercase focus:border-blue-500 outline-none transition-all"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-500 uppercase ml-1">
+                    Senha
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showClosurePassword ? "text" : "password"}
+                      value={closureAuth.password}
+                      onChange={(e) =>
+                        setClosureAuth({
+                          ...closureAuth,
+                          password: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleMonthClosure();
+                      }}
+                      placeholder="SENHA"
+                      className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-blue-500 outline-none transition-all pr-12"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowClosurePassword(!showClosurePassword)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                    >
+                      {showClosurePassword ? (
+                        <EyeOff className="w-4 h-4" />
+                      ) : (
+                        <Eye className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <button
+                  onClick={handleMonthClosure}
+                  disabled={isClosingMonth}
+                  className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-blue-700 transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isClosingMonth ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Lock className="w-4 h-4" />
+                  )}
+                  Assinar e Encerrar
+                </button>
+
+                <button
+                  onClick={() => setShowClosureModal(false)}
+                  className="w-full text-gray-400 font-bold text-[10px] uppercase hover:text-gray-600 py-2"
+                  disabled={isClosingMonth}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSignatureModal && signatureRole && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-sm rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300">
+            <div className="bg-purple-600 p-6 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Lock className="w-5 h-5" />
+                <h3 className="font-black text-xs uppercase tracking-widest">
+                  Assinatura Digital
+                </h3>
+              </div>
+              <button
+                onClick={() => {
+                  setShowSignatureModal(false);
+                  setSignatureRole(null);
+                }}
+                className="p-2 hover:bg-white/20 rounded-full transition-colors"
+                disabled={isSigning}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-8 space-y-6">
+              <div className="text-center space-y-2">
+                <ShieldCheck className="w-12 h-12 text-purple-600 mx-auto" />
+                <p className="text-[11px] font-black uppercase text-purple-700 tracking-wider">
+                  {signatureRole.label}
+                </p>
+                <p className="text-[10px] font-bold text-gray-400 uppercase leading-relaxed">
+                  Insira suas credenciais cadastradas no sistema para assinar este relatório digitalmente para {monthFilter}.
+                </p>
+              </div>
+
+              {sigError && (
+                <div className="p-4 bg-red-50 border-2 border-red-200 rounded-2xl text-center space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                  <p className="text-[10px] font-black text-red-700 leading-normal uppercase">
+                    {sigError}
+                  </p>
+                  {sigError.includes("Acesso Negado") && (
+                    <a
+                      href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                        `Olá! Sou militar operacional e gostaria de solicitar ao Administrador do Sistema a permissão de assinatura para a função de '${signatureRole.label}' para o meu usuário '${sigAuth.username}' no CheckViatura Pro.`
+                      )}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white font-black rounded-lg text-[9px] uppercase tracking-wider transition-all w-full"
+                    >
+                      Solicitar Permissão
+                    </a>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-500 uppercase ml-1">
+                    Usuário
+                  </label>
+                  <input
+                    type="text"
+                    value={sigAuth.username}
+                    onChange={(e) =>
+                      setSigAuth({
+                        ...sigAuth,
+                        username: e.target.value,
+                      })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleConfirmSignature();
+                    }}
+                    placeholder="USUÁRIO"
+                    className="w-full border-2 rounded-2xl p-4 text-center font-black uppercase focus:border-purple-500 outline-none transition-all"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-500 uppercase ml-1">
+                    Senha
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showSigPassword ? "text" : "password"}
+                      value={sigAuth.password}
+                      onChange={(e) =>
+                        setSigAuth({
+                          ...sigAuth,
+                          password: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleConfirmSignature();
+                      }}
+                      placeholder="SENHA"
+                      className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-purple-500 outline-none transition-all pr-12"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSigPassword(!showSigPassword)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                    >
+                      {showSigPassword ? (
+                        <EyeOff className="w-4 h-4" />
+                      ) : (
+                        <Eye className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <button
+                  onClick={handleConfirmSignature}
+                  disabled={isSigning}
+                  className="w-full bg-purple-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-purple-700 transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isSigning ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Lock className="w-4 h-4" />
+                  )}
+                  Confirmar Assinatura
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowSignatureModal(false);
+                    setSignatureRole(null);
+                  }}
+                  className="w-full text-gray-400 font-bold text-[10px] uppercase hover:text-gray-600 py-2"
+                  disabled={isSigning}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
   const renderJsonView = (data: any, title: string, subtitle: string) => {
     return (
       <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
@@ -3258,6 +3540,7 @@ export const Reports: React.FC<ReportsProps> = ({
           viewingJsonData.title,
           viewingJsonData.subtitle,
         )}
+        {renderSharedModals()}
       </div>
     );
   }
@@ -3331,21 +3614,6 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
 
             <div className="flex gap-2">
-              {[
-                "daily_control",
-                "daily_control_motos",
-                "weekly_leves",
-                "weekly_motos",
-                "weekly_ab",
-              ].includes(activeReport) && (
-                <button
-                  onClick={() => setShowJustificationModal(true)}
-                  className="flex items-center gap-2 bg-purple-50 text-purple-700 px-4 py-2.5 rounded-xl border border-purple-100 text-[10px] font-black uppercase tracking-widest hover:bg-purple-100 transition-all"
-                >
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  Lançar Justificativa
-                </button>
-              )}
             </div>
           </div>
         </div>
@@ -3400,12 +3668,21 @@ export const Reports: React.FC<ReportsProps> = ({
                     </label>
                     <select
                       value={newJustification.date}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const selectedDate = e.target.value;
+                        const prefix = Array.from(selectedPrefixes)[0];
+                        const existing = justifications.find(
+                          (j) =>
+                            String(j.date).startsWith(selectedDate) &&
+                            normalizePrefix(j.vehicleType) ===
+                              normalizePrefix(prefix),
+                        );
                         setNewJustification({
                           ...newJustification,
-                          date: e.target.value,
-                        })
-                      }
+                          date: selectedDate,
+                          justification: existing ? existing.justification : "",
+                        });
+                      }}
                       className="w-full border-2 rounded-2xl p-4 text-sm font-bold focus:border-purple-500 outline-none transition-all bg-white"
                     >
                       <option value="">Selecione o Dia</option>
@@ -3437,7 +3714,6 @@ export const Reports: React.FC<ReportsProps> = ({
                           { length: daysInMonth },
                           (_, i) => i + 1,
                         )
-                          .filter((d) => !filledDays.has(d))
                           .map((d) => {
                             const dStr = `${year}-${monthNum.toString().padStart(2, "0")}-${d.toString().padStart(2, "0")}`;
                             return (
@@ -3567,9 +3843,9 @@ export const Reports: React.FC<ReportsProps> = ({
                     const jData = {
                       action: "saveJustification",
                       id: crypto.randomUUID(),
-                      dateRef: newJustification.date,
-                      type:
-                        activeReport === "daily_control" ? "DIARIO" : "SEMANAL",
+                      date: newJustification.date,
+                      dateRef: newJustification.date, // Add dateRef for script compatibility
+                      type: activeReport || "GERAL",
                       vehicleType: prefix,
                       station: prefix,
                       justification: newJustification.justification,
@@ -3999,6 +4275,7 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
           </div>
         )}
+        {renderSharedModals()}
       </div>
     );
   }
