@@ -166,31 +166,80 @@ const App: React.FC = () => {
   });
 
   useEffect(() => {
-    // Initial fetch of users from cloud to keep them updated
+    // Busca inicial de configurações, usuários, viaturas e postos no banco de dados na nuvem para manter tudo atualizado
     const syncOnStartup = async () => {
       const targetUrl = settings.googleSheetUrl?.trim();
       if (!targetUrl) return;
 
+      setIsSyncing(true);
       try {
-        const urlFetch = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`;
-        const response = await fetch(urlFetch);
-        const cloudUsers = await response.json();
+        console.log("Iniciando sincronização completa com banco de dados na inicialização...");
         
-        if (Array.isArray(cloudUsers) && cloudUsers.length > 0) {
-          setSettings(prev => {
-            const updated = { ...prev, users: cloudUsers };
-            localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
-            return updated;
-          });
-          console.log("Usuários sincronizados via nuvem na inicialização.");
-        }
+        // Disparar requisições em paralelo
+        const [settingsRes, usersRes, vehiclesRes, stationsRes] = await Promise.all([
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getSettings`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getVehicles`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations`).then(r => r.ok ? r.json() : null).catch(() => null)
+        ]);
+
+        setSettings(prev => {
+          let updated = { ...prev };
+
+          // 1. Sincronizar Configurações do Sistema (Ignorando dados específicos de conexão local como URL e SpreadsheetID)
+          if (settingsRes && typeof settingsRes === 'object' && !Array.isArray(settingsRes)) {
+            for (const key in settingsRes) {
+              if (settingsRes.hasOwnProperty(key) && key !== 'googleSheetUrl' && key !== 'googleSpreadsheetId') {
+                (updated as any)[key] = settingsRes[key];
+              }
+            }
+          }
+
+          // 2. Sincronizar Usuários
+          if (Array.isArray(usersRes) && usersRes.length > 0) {
+            updated.users = usersRes;
+          }
+
+          // 3. Sincronizar Viaturas
+          if (Array.isArray(vehiclesRes) && vehiclesRes.length > 0) {
+            updated.vehicles = vehiclesRes;
+          }
+
+          // 4. Sincronizar Postos
+          if (Array.isArray(stationsRes) && stationsRes.length > 0) {
+            updated.stations = stationsRes;
+          }
+
+          localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
+          console.log("Todas as configurações e tabelas sincronizadas do banco de dados com sucesso na inicialização!");
+          return updated;
+        });
       } catch (err) {
-        console.error("Erro na sincronização inicial de usuários:", err);
+        console.error("Erro no carregamento/sincronização inicial das configurações:", err);
+      } finally {
+        setIsSyncing(false);
       }
     };
 
     syncOnStartup();
   }, []);
+
+  useEffect(() => {
+    // Sincronizar imagens da viatura caso a nuvem traga imagens customizadas
+    if (settings.vehicleImages && settings.vehicleImages.length > 0) {
+      setData(prev => {
+        // Apenas sincroniza se o usuário ainda não tiver feito alterações locais (ex: sem fotos de inspeção e sem danos)
+        if (prev.photos.length === 0 && prev.damages.length === 0) {
+          return {
+            ...prev,
+            vehicleImages: [...settings.vehicleImages],
+            vehicleImageRatios: [...(settings.vehicleImageRatios || [])]
+          };
+        }
+        return prev;
+      });
+    }
+  }, [settings.vehicleImages, settings.vehicleImageRatios]);
 
   useEffect(() => {
     if (currentUser) {

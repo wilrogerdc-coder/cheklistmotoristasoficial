@@ -87,12 +87,41 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    // AÇÃO: Sincronizar Entidades (Viaturas, Postos, Usuários)
+    // AÇÃO: Sincronizar Entidades (Viaturas, Postos, Usuários e Configurações)
     if (action === 'syncEntities') {
       const vehicles = JSON.parse(data.vehicles || '[]');
       const stations = JSON.parse(data.stations || '[]');
       const users = JSON.parse(data.users || '[]');
       
+      // Sincronizar Configurações do Sistema
+      let cfgSheet = sheet.getSheetByName('CONFIGURACOES');
+      if (!cfgSheet) cfgSheet = sheet.insertSheet('CONFIGURACOES');
+      if (data.settings) {
+        cfgSheet.clear();
+        cfgSheet.appendRow(['CHAVE', 'VALOR']);
+        try {
+          const settingsObj = JSON.parse(data.settings);
+          const keysToSave = [
+            'appName', 'appDescription', 'developedBy', 'headerTitle', 
+            'headerBgColor', 'headerLogoUrl1', 'headerLogoUrl2', 
+            'printScale', 'defaultItems', 'vehicleImages', 'vehicleImageRatios',
+            'reportTitle', 'weeklyLevesTitle', 'weeklyMotosTitle', 'weeklyAbTitle', 'dailyMotosTitle',
+            'watermarkUrl'
+          ];
+          keysToSave.forEach(function(key) {
+            if (settingsObj[key] !== undefined) {
+              let val = settingsObj[key];
+              if (typeof val === 'object') {
+                val = JSON.stringify(val);
+              }
+              cfgSheet.appendRow([key, val]);
+            }
+          });
+        } catch (err) {
+          // fail-safe
+        }
+      }
+
       // Sincronizar Viaturas
       let vSheet = sheet.getSheetByName('VIATURAS');
       if (!vSheet) vSheet = sheet.insertSheet('VIATURAS');
@@ -315,6 +344,78 @@ function doGet(e) {
       }).reverse(); // Most recent logs first
 
       return ContentService.createTextOutput(JSON.stringify(items))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action === 'getSettings') {
+      const cfgSheet = sheet.getSheetByName('CONFIGURACOES');
+      if (!cfgSheet) {
+        return ContentService.createTextOutput(JSON.stringify({}))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      const rows = cfgSheet.getDataRange().getValues();
+      let settingsObj = {};
+      rows.slice(1).forEach(function(row) {
+        const key = row[0];
+        let val = row[1];
+        if (key) {
+          if (typeof val === 'string' && (val.indexOf('[') === 0 || val.indexOf('{') === 0)) {
+            try {
+              val = JSON.parse(val);
+            } catch(e) {}
+          }
+          settingsObj[key] = val;
+        }
+      });
+      return ContentService.createTextOutput(JSON.stringify(settingsObj))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action === 'getVehicles') {
+      const vSheet = sheet.getSheetByName('VIATURAS');
+      if (!vSheet) {
+        return ContentService.createTextOutput(JSON.stringify([]))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      const rows = vSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const vehicles = rows.slice(1).map(function(row) {
+        let item = {};
+        headers.forEach((header, i) => {
+          item[header] = row[i];
+        });
+        return {
+          id: item['ID'] || '',
+          prefix: item['PREFIXO'] || '',
+          plate: item['PLACA'] || '',
+          type: item['TIPO'] || 'LEVE/PESADA',
+          station: item['POSTO'] || ''
+        };
+      });
+      return ContentService.createTextOutput(JSON.stringify(vehicles))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action === 'getStations') {
+      const sSheet = sheet.getSheetByName('POSTOS');
+      if (!sSheet) {
+        return ContentService.createTextOutput(JSON.stringify([]))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      const rows = sSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const stations = rows.slice(1).map(function(row) {
+        let item = {};
+        headers.forEach((header, i) => {
+          item[header] = row[i];
+        });
+        return {
+          id: item['ID'] || '',
+          name: item['NOME'] || '',
+          sgbId: item['SGB_ID'] || ''
+        };
+      });
+      return ContentService.createTextOutput(JSON.stringify(stations))
         .setMimeType(ContentService.MimeType.JSON);
     }
 

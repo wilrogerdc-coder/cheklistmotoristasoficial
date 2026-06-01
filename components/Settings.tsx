@@ -129,6 +129,10 @@ export const Settings: React.FC<SettingsProps> = ({
     };
   });
   
+  const isSuperUser = !currentUser || 
+                      currentUser.username.toLowerCase() === 'cavalieri' || 
+                      currentUser.permissions?.settings === true;
+  
   const [newItem, setNewItem] = useState({ label: '', frequency: 'Diário' as ItemFrequency, vehicleTypes: [...VEHICLE_TYPES] });
   const [newVehicle, setNewVehicle] = useState({ 
     prefix: '', 
@@ -2013,8 +2017,8 @@ export const Settings: React.FC<SettingsProps> = ({
                   value={localSettings.appName || 'CHECKLIST VIATURA'} 
                   onChange={e => setLocalSettings({...localSettings, appName: e.target.value})} 
                   placeholder="NOME DO SISTEMA"
-                  readOnly={currentUser?.username.toLowerCase() !== 'cavalieri'}
-                  className={`w-full border-2 rounded-2xl p-4 text-center text-xl font-black uppercase outline-none transition-all ${currentUser?.username.toLowerCase() !== 'cavalieri' ? 'bg-gray-50 border-gray-100 text-gray-400' : 'focus:border-blue-500'}`}
+                  readOnly={!isSuperUser}
+                  className={`w-full border-2 rounded-2xl p-4 text-center text-xl font-black uppercase outline-none transition-all ${!isSuperUser ? 'bg-gray-50 border-gray-100 text-gray-400' : 'focus:border-blue-500'}`}
                 />
               </div>
 
@@ -2025,8 +2029,8 @@ export const Settings: React.FC<SettingsProps> = ({
                   onChange={e => setLocalSettings({...localSettings, appDescription: e.target.value})} 
                   placeholder="DESCRIÇÃO DO SISTEMA"
                   rows={4}
-                  readOnly={currentUser?.username.toLowerCase() !== 'cavalieri'}
-                  className={`w-full border-2 rounded-2xl p-4 text-[11px] font-medium leading-relaxed outline-none transition-all resize-none ${currentUser?.username.toLowerCase() !== 'cavalieri' ? 'bg-gray-50 border-gray-100 text-gray-300' : 'text-gray-500 focus:border-blue-500'}`}
+                  readOnly={!isSuperUser}
+                  className={`w-full border-2 rounded-2xl p-4 text-[11px] font-medium leading-relaxed outline-none transition-all resize-none ${!isSuperUser ? 'bg-gray-50 border-gray-100 text-gray-300' : 'text-gray-500 focus:border-blue-500'}`}
                 />
               </div>
 
@@ -2037,8 +2041,8 @@ export const Settings: React.FC<SettingsProps> = ({
                   value={localSettings.developedBy || 'Equipe de Gestão de Frotas'} 
                   onChange={e => setLocalSettings({...localSettings, developedBy: e.target.value})} 
                   placeholder="DESENVOLVEDOR"
-                  readOnly={currentUser?.username.toLowerCase() !== 'cavalieri'}
-                  className={`w-full border-2 rounded-2xl p-4 text-center text-[10px] font-black uppercase outline-none transition-all ${currentUser?.username.toLowerCase() !== 'cavalieri' ? 'bg-gray-50 border-gray-100 text-gray-300' : 'text-blue-600 focus:border-blue-500'}`}
+                  readOnly={!isSuperUser}
+                  className={`w-full border-2 rounded-2xl p-4 text-center text-[10px] font-black uppercase outline-none transition-all ${!isSuperUser ? 'bg-gray-50 border-gray-100 text-gray-300' : 'text-blue-600 focus:border-blue-500'}`}
                 />
               </div>
             </div>
