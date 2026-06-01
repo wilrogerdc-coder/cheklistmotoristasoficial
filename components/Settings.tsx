@@ -121,6 +121,16 @@ export const Settings: React.FC<SettingsProps> = ({
     if (tabId === 'login') return true;
     if (tabId === 'manual' || tabId === 'about') return true;
 
+    // Se é a aba relatórios ou editor de relatórios, ela só pode ser exibida se os ajustes estiverem desbloqueados por senha
+    if (tabId === 'reports' || tabId === 'report_editor') {
+      if (!isSettingsUnlocked) return false;
+    }
+
+    // Ocultar menus de relatórios para usuários visitantes (sem usuário logado)
+    if (tabId === 'reports' || tabId === 'report_editor') {
+      if (!currentUser && !isSettingsUnlocked) return false;
+    }
+
     // Se é superOnly, precisa do login Cavalieri (mestre)
     if (tabId === 'cloud') {
       return currentUser?.username.toLowerCase() === 'cavalieri';
@@ -201,9 +211,10 @@ export const Settings: React.FC<SettingsProps> = ({
     };
   });
   
-  const isSuperUser = !currentUser || 
+  const isSuperUser = !!currentUser && (
                       currentUser.username.toLowerCase() === 'cavalieri' || 
-                      currentUser.permissions?.settings === true;
+                      currentUser.permissions?.settings === true
+                    );
   
   const [newItem, setNewItem] = useState({ label: '', frequency: 'Diário' as ItemFrequency, vehicleTypes: [...VEHICLE_TYPES] });
   const [newVehicle, setNewVehicle] = useState({ 

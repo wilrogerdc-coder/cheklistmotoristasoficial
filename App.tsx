@@ -48,7 +48,9 @@ import {
   X,
   Cloud,
   CloudOff,
-  RefreshCw
+  RefreshCw,
+  BookOpen,
+  Info
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -1007,16 +1009,23 @@ const App: React.FC = () => {
         {view === 'checklist' ? (
           <>
             <button onClick={() => { setActiveTabInSettings('manual'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-blue-600 transition-colors">
-              <SettingsIcon className="w-5 h-5 text-blue-500" />
-              <span className="text-xs font-bold hidden sm:inline">Ajustes / Manual</span>
+              <BookOpen className="w-5 h-5 text-blue-500" />
+              <span className="text-xs font-bold hidden sm:inline">Manual</span>
             </button>
             
-            {hasPermission('reports') && (
-              <>
-                <div className="w-px h-6 bg-gray-200 mx-1"></div>
-                <button onClick={() => { setActiveTabInSettings('reports'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-purple-600 transition-colors"><FileText className="w-5 h-5 text-purple-500" /><span className="text-xs font-bold hidden sm:inline">Relatórios</span></button>
-              </>
-            )}
+            <div className="w-px h-6 bg-gray-200 mx-1"></div>
+            
+            <button onClick={() => { setActiveTabInSettings('about'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-indigo-600 transition-colors">
+              <Info className="w-5 h-5 text-indigo-500" />
+              <span className="text-xs font-bold hidden sm:inline">Sobre</span>
+            </button>
+
+            <div className="w-px h-6 bg-gray-200 mx-1"></div>
+
+            <button onClick={() => { setActiveTabInSettings('login'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-red-600 transition-colors">
+              <SettingsIcon className="w-5 h-5 text-red-500" />
+              <span className="text-xs font-bold hidden sm:inline">Ajustes</span>
+            </button>
 
             {view === 'checklist' && hasPermission('checklist') && (
               <>

@@ -18,6 +18,7 @@ import {
   ChevronLeft,
   X,
   Eye,
+  EyeOff,
   Clock,
   Loader2,
   CheckCircle,
@@ -73,6 +74,10 @@ export const Reports: React.FC<ReportsProps> = ({
   } | null>(null);
   const [sigAuth, setSigAuth] = useState({ username: "", password: "" });
   const [isSigning, setIsSigning] = useState(false);
+  const [sigError, setSigError] = useState<string | null>(null);
+  const [closureError, setClosureError] = useState<string | null>(null);
+  const [showSigPassword, setShowSigPassword] = useState(false);
+  const [showClosurePassword, setShowClosurePassword] = useState(false);
   const [justificationAuth, setJustificationAuth] = useState({
     username: "",
     password: "",
@@ -126,23 +131,33 @@ export const Reports: React.FC<ReportsProps> = ({
   const handleTriggerSignature = (roleId: string, roleLabel: string) => {
     setSignatureRole({ id: roleId, label: roleLabel });
     setSigAuth({ username: "", password: "" });
+    setSigError(null);
+    setShowSigPassword(false);
     setShowSignatureModal(true);
   };
 
+  const handleTriggerClosure = () => {
+    setClosureAuth({ username: "", password: "" });
+    setClosureError(null);
+    setShowClosurePassword(false);
+    setShowClosureModal(true);
+  };
+
   const handleConfirmSignature = async () => {
+    setSigError(null);
     if (!sigAuth.username || !sigAuth.password) {
-      alert("Por favor, preencha o Usuário e a Senha.");
+      setSigError("Por favor, preencha o Usuário e a Senha.");
       return;
     }
     if (!signatureRole || !monthFilter || selectedPrefixes.size !== 1) {
-      alert("Selecione uma viatura e mês para assinar.");
+      setSigError("Selecione uma viatura e mês para assinar.");
       return;
     }
 
     setIsSigning(true);
     const rawUrl = settings.googleSheetUrl;
     if (!rawUrl) {
-      alert("URL do banco de dados não configurada.");
+      setSigError("URL do banco de dados não configurada.");
       setIsSigning(false);
       return;
     }
@@ -159,7 +174,7 @@ export const Reports: React.FC<ReportsProps> = ({
       );
 
       if (!user) {
-        alert(
+        setSigError(
           "Usuário ou Senha incorretos. A assinatura digital exige cadastro no sistema.",
         );
         setIsSigning(false);
@@ -180,33 +195,33 @@ export const Reports: React.FC<ReportsProps> = ({
 
       if (!isMaster) {
         if (userPerms.canSign !== true) {
-          alert("Acesso Negado: Seu usuário não tem permissão para realizar assinaturas digitais.");
+          setSigError("Acesso Negado: Seu usuário não tem permissão geral de 'Permitir Assinar Documentos' ativada.");
           setIsSigning(false);
           return;
         }
 
         // Validar por papel específico de acordo com a função solicitada
-        if (signatureRole.id.startsWith("CH_MOTORISTAS_")) {
+        if (signatureRole.id.startsWith("CH_MOTORISTAS_") || signatureRole.id.startsWith("CH_MOTOS_")) {
           if (userPerms.signAsChefeMotoristas !== true) {
-            alert("Acesso Negado: Seu usuário não tem autorização para assinar como CHEFE DOS MOTORISTAS.");
+            setSigError("Acesso Negado: Seu usuário não possui a função 'Chefe Motoristas' ativada.");
             setIsSigning(false);
             return;
           }
         } else if (signatureRole.id.startsWith("CMT_PRONTIDAO_")) {
           if (userPerms.signAsCmtProntidao !== true) {
-            alert("Acesso Negado: Seu usuário não tem autorização para assinar como COMANDANTE DE PRONTIDÃO.");
+            setSigError("Acesso Negado: Seu usuário não possui a função 'CMT Prontidão' ativada.");
             setIsSigning(false);
             return;
           }
-        } else if (signatureRole.id === "CMT_POSTO") {
+        } else if (signatureRole.id === "CMT_POSTO" || signatureRole.id === "CMT_POSTO_MOTO") {
           if (userPerms.signAsCmtPosto !== true) {
-            alert("Acesso Negado: Seu usuário não tem autorização para assinar como COMANDANTE DO POSTO.");
+            setSigError("Acesso Negado: Seu usuário não possui a função 'CMT Posto' ativada.");
             setIsSigning(false);
             return;
           }
-        } else if (signatureRole.id === "CMT_SGB") {
+        } else if (signatureRole.id === "CMT_SGB" || signatureRole.id === "CMT_SGB_MOTO") {
           if (userPerms.signAsCmtSgb !== true) {
-            alert("Acesso Negado: Seu usuário não tem autorização para assinar como COMANDANTE DO SGB.");
+            setSigError("Acesso Negado: Seu usuário não possui a função 'CMT SGB' ativada.");
             setIsSigning(false);
             return;
           }
@@ -235,9 +250,10 @@ export const Reports: React.FC<ReportsProps> = ({
       setShowSignatureModal(false);
       setSigAuth({ username: "", password: "" });
       setSignatureRole(null);
+      setSigError(null);
       fetchMonthClosures();
     } catch (e) {
-      alert("Erro ao salvar assinatura digital.");
+      setSigError("Erro operacional ao registrar assinatura digital.");
       console.error(e);
     } finally {
       setIsSigning(false);
@@ -293,14 +309,19 @@ export const Reports: React.FC<ReportsProps> = ({
   }, [activeReport, monthFilter, selectedPrefixes]);
 
   const handleMonthClosure = async () => {
+    setClosureError(null);
     if (!closureAuth.username || !closureAuth.password) {
-      alert("Informe usuário e senha para assinar o fechamento.");
+      setClosureError("Informe usuário e senha para assinar o fechamento.");
       return;
     }
 
     setIsClosingMonth(true);
     const rawUrl = settings.googleSheetUrl;
-    if (!rawUrl) return;
+    if (!rawUrl) {
+      setClosureError("URL do banco de dados não configurada.");
+      setIsClosingMonth(false);
+      return;
+    }
 
     try {
       // Validar usuário
@@ -315,9 +336,29 @@ export const Reports: React.FC<ReportsProps> = ({
       );
 
       if (!user) {
-        alert("Credenciais inválidas.");
+        setClosureError("Usuário ou Senha incorretos. O fechamento exige cadastro ativo.");
         setIsClosingMonth(false);
         return;
+      }
+
+      // Validação de Permissão e Papel de Assinatura para Fechamento Mensal
+      let userPerms = user.permissions || {};
+      if (typeof userPerms === 'string') {
+        try {
+          userPerms = JSON.parse(userPerms);
+        } catch (err) {
+          userPerms = {};
+        }
+      }
+
+      const isMaster = user.username.toLowerCase() === 'cavalieri';
+
+      if (!isMaster) {
+        if (userPerms.canSign !== true || userPerms.signAsChefeMotoristas !== true) {
+          setClosureError("Acesso Negado: Seu usuário não tem permissão para realizar o Fechamento Mensal como CHEFE DOS MOTORISTAS.");
+          setIsClosingMonth(false);
+          return;
+        }
       }
 
       // Salvar log de fechamento
@@ -342,9 +383,10 @@ export const Reports: React.FC<ReportsProps> = ({
       alert("Mês encerrado com sucesso!");
       setShowClosureModal(false);
       setClosureAuth({ username: "", password: "" });
+      setClosureError(null);
       fetchMonthClosures();
     } catch (e) {
-      alert("Erro ao encerrar mês.");
+      setClosureError("Erro operacional ao realizar fechamento no banco.");
       console.error(e);
     } finally {
       setIsClosingMonth(false);
@@ -1170,7 +1212,16 @@ export const Reports: React.FC<ReportsProps> = ({
                         {sig ? (
                           sig.user
                         ) : (
-                          <span className="text-[5.5px] text-gray-300 no-print font-bold">
+                          <span 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleTriggerSignature(
+                                role.id,
+                                `CHEFE DOS MOTORISTAS - ${role.label}`,
+                              );
+                            }}
+                            className="text-[6px] text-purple-600 bg-purple-50 px-1 py-0.5 hover:bg-purple-100 rounded font-black no-print transition-all cursor-pointer"
+                          >
                             + ASSINAR
                           </span>
                         )}
@@ -1210,7 +1261,16 @@ export const Reports: React.FC<ReportsProps> = ({
                         {sig ? (
                           sig.user
                         ) : (
-                          <span className="text-[5.5px] text-gray-300 no-print font-bold">
+                          <span 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleTriggerSignature(
+                                role.id,
+                                `COMANDANTE DE PRONTIDÃO - ${role.label}`,
+                              );
+                            }}
+                            className="text-[6px] text-purple-600 bg-purple-50 px-1 py-0.5 hover:bg-purple-100 rounded font-black no-print transition-all cursor-pointer"
+                          >
                             + ASSINAR
                           </span>
                         )}
@@ -1222,7 +1282,7 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
 
             {/* Final Signature Row */}
-            <div className="grid grid-cols-3 mt-4 gap-4 items-end">
+            <div className="grid grid-cols-2 mt-4 gap-4 items-end">
               <div
                 onClick={() =>
                   handleTriggerSignature("CMT_POSTO", "COMANDANTE DO POSTO")
@@ -1245,55 +1305,18 @@ export const Reports: React.FC<ReportsProps> = ({
                     );
                   }
                   return (
-                    <div className="h-6 text-[6px] text-gray-300 font-bold flex items-center justify-center no-print text-center w-full">
-                      + ASSINAR DIGITAL
+                    <div 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleTriggerSignature("CMT_POSTO", "COMANDANTE DO POSTO");
+                      }}
+                      className="mb-1.5 px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 hover:text-purple-800 rounded text-[6px] font-black uppercase no-print transition-all active:scale-95 flex items-center gap-1 mx-auto border border-purple-200 shadow-sm cursor-pointer"
+                    >
+                      <Lock className="w-2.5 h-2.5 text-purple-500" /> + ASSINAR DIGITAL
                     </div>
                   );
                 })()}
                 <span className="block font-black text-[8px]">CMT POSTO</span>
-              </div>
-
-              <div className="flex flex-col items-center">
-                {(() => {
-                  const prefix = Array.from(selectedPrefixes)[0];
-                  const closure = monthClosures.find(
-                    (c) =>
-                      c.action === "FECHAMENTO_MENSAL" &&
-                      c.details.includes(monthFilter) &&
-                      c.details.includes(prefix),
-                  );
-
-                  if (closure) {
-                    return (
-                      <div className="w-full border-t border-black text-center pt-1 text-green-600 min-h-[46px]">
-                        <CheckCircle className="w-4 h-4 mx-auto mb-1" />
-                        <p className="text-[8px] font-black uppercase">
-                          MÊS ENCERRADO PELO CHEFE:
-                        </p>
-                        <p className="text-[7px] font-black uppercase">
-                          {closure.user}
-                        </p>
-                        <p className="text-[7px] opacity-70 uppercase">
-                          DATA: {closure.date}
-                        </p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className="w-full border-t border-black text-center pt-1 min-h-[46px] flex flex-col justify-end">
-                      <p className="text-[8px] font-black uppercase">
-                        CH DOS MOTORISTAS (FECHAMENTO)
-                      </p>
-                      <button
-                        onClick={() => setShowClosureModal(true)}
-                        className="mt-1 px-3 py-1 bg-blue-600 text-white rounded text-[7px] font-black uppercase no-print hover:bg-blue-700 transition-all active:scale-95 flex items-center gap-1 mx-auto"
-                      >
-                        <Lock className="w-3 h-3" /> Assinar Fechamento
-                      </button>
-                    </div>
-                  );
-                })()}
               </div>
 
               <div
@@ -1318,8 +1341,14 @@ export const Reports: React.FC<ReportsProps> = ({
                     );
                   }
                   return (
-                    <div className="h-6 text-[6px] text-gray-300 font-bold flex items-center justify-center no-print text-center w-full">
-                      + ASSINAR DIGITAL
+                    <div 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleTriggerSignature("CMT_SGB", "COMANDANTE DO SGB");
+                      }}
+                      className="mb-2 px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 hover:text-purple-800 rounded text-[6px] font-black uppercase no-print transition-all active:scale-95 flex items-center gap-1 mx-auto border border-purple-200 shadow-sm cursor-pointer"
+                    >
+                      <Lock className="w-2.5 h-2.5 text-purple-500" /> + ASSINAR DIGITAL
                     </div>
                   );
                 })()}
@@ -2044,7 +2073,16 @@ export const Reports: React.FC<ReportsProps> = ({
                       {sig ? (
                         sig.user
                       ) : (
-                        <span className="text-[5.5px] text-gray-300 no-print font-bold">
+                        <span 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleTriggerSignature(
+                              role.id,
+                              `CH DOS MOTOCICLISTAS - ${role.label}`,
+                            );
+                          }}
+                          className="text-[6px] text-purple-600 bg-purple-50 px-1 py-0.5 hover:bg-purple-100 rounded font-black no-print transition-all cursor-pointer"
+                        >
                           + ASSINAR
                         </span>
                       )}
@@ -2084,7 +2122,16 @@ export const Reports: React.FC<ReportsProps> = ({
                       {sig ? (
                         sig.user
                       ) : (
-                        <span className="text-[5.5px] text-gray-300 no-print font-bold">
+                        <span 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleTriggerSignature(
+                              role.id,
+                              `COMANDANTE DE PRONTIDÃO (MOTOS) - ${role.label}`,
+                            );
+                          }}
+                          className="text-[6px] text-purple-600 bg-purple-50 px-1 py-0.5 hover:bg-purple-100 rounded font-black no-print transition-all cursor-pointer"
+                        >
                           + ASSINAR
                         </span>
                       )}
@@ -2096,7 +2143,7 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
 
           {/* Final Signature Row */}
-          <div className="grid grid-cols-3 mt-4 gap-4 items-end">
+          <div className="grid grid-cols-2 mt-4 gap-4 items-end">
             <div
               onClick={() =>
                 handleTriggerSignature(
@@ -2122,55 +2169,21 @@ export const Reports: React.FC<ReportsProps> = ({
                   );
                 }
                 return (
-                  <div className="h-6 text-[6px] text-gray-300 font-bold flex items-center justify-center no-print text-center w-full">
-                    + ASSINAR DIGITAL
+                  <div 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleTriggerSignature(
+                        "CMT_POSTO_MOTO",
+                        "COMANDANTE DO POSTO (MOTOS)",
+                      );
+                    }}
+                    className="mb-1.5 px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 hover:text-purple-800 rounded text-[6px] font-black uppercase no-print transition-all active:scale-95 flex items-center gap-1 mx-auto border border-purple-200 shadow-sm cursor-pointer"
+                  >
+                    <Lock className="w-2.5 h-2.5 text-purple-500" /> + ASSINAR DIGITAL
                   </div>
                 );
               })()}
               <span className="block font-black text-[8px]">CMT POSTO</span>
-            </div>
-
-            <div className="flex flex-col items-center">
-              {(() => {
-                const prefix = Array.from(selectedPrefixes)[0];
-                const closure = monthClosures.find(
-                  (c) =>
-                    c.action === "FECHAMENTO_MENSAL" &&
-                    c.details.includes(monthFilter) &&
-                    c.details.includes(prefix),
-                );
-
-                if (closure) {
-                  return (
-                    <div className="w-full border-t border-black text-center pt-1 text-green-600 min-h-[46px]">
-                      <CheckCircle className="w-4 h-4 mx-auto mb-1" />
-                      <p className="text-[8px] font-black uppercase">
-                        MÊS ENCERRADO PELO CHEFE:
-                      </p>
-                      <p className="text-[7px] font-black uppercase">
-                        {closure.user}
-                      </p>
-                      <p className="text-[7px] opacity-70 uppercase">
-                        DATA: {closure.date}
-                      </p>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div className="w-full border-t border-black text-center pt-1 min-h-[46px] flex flex-col justify-end">
-                    <p className="text-[8px] font-black uppercase">
-                      CH DOS MOTORISTAS (FECHAMENTO)
-                    </p>
-                    <button
-                      onClick={() => setShowClosureModal(true)}
-                      className="mt-1 px-3 py-1 bg-blue-600 text-white rounded text-[7px] font-black uppercase no-print hover:bg-blue-700 transition-all active:scale-95 flex items-center gap-1 mx-auto"
-                    >
-                      <Lock className="w-3 h-3" /> Assinar Fechamento
-                    </button>
-                  </div>
-                );
-              })()}
             </div>
 
             <div
@@ -2198,8 +2211,17 @@ export const Reports: React.FC<ReportsProps> = ({
                   );
                 }
                 return (
-                  <div className="h-6 text-[6px] text-gray-300 font-bold flex items-center justify-center no-print text-center w-full">
-                    + ASSINAR DIGITAL
+                  <div 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleTriggerSignature(
+                        "CMT_SGB_MOTO",
+                        "COMANDANTE DO SGB (MOTOS)",
+                      );
+                    }}
+                    className="mb-2 px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 hover:text-purple-800 rounded text-[6px] font-black uppercase no-print transition-all active:scale-95 flex items-center gap-1 mx-auto border border-purple-200 shadow-sm cursor-pointer"
+                  >
+                    <Lock className="w-2.5 h-2.5 text-purple-500" /> + ASSINAR DIGITAL
                   </div>
                 );
               })()}
@@ -2350,9 +2372,18 @@ export const Reports: React.FC<ReportsProps> = ({
                           </p>
                         </div>
                       ) : (
-                        <div className="h-5 text-[6px] text-gray-300 font-bold no-print flex items-center justify-center">
+                        <span 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleTriggerSignature(
+                              role.id,
+                              `CHEFE DOS MOTORISTAS - ${role.label}`,
+                            );
+                          }}
+                          className="text-[6px] text-purple-600 bg-purple-50 px-1.5 py-0.5 hover:bg-purple-100 rounded font-black no-print transition-all mb-1 cursor-pointer"
+                        >
                           + ASSINAR
-                        </div>
+                        </span>
                       )}
                       <span className="text-[8px] font-black uppercase">
                         {role.label}
@@ -2364,49 +2395,6 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
           </div>
 
-          <div className="mt-4 flex flex-col items-center">
-            {(() => {
-              const prefix = Array.from(selectedPrefixes)[0];
-              const closure = monthClosures.find(
-                (c) =>
-                  c.details.includes(monthFilter) && c.details.includes(prefix),
-              );
-
-              if (closure) {
-                return (
-                  <div className="w-64 border-t border-black text-center pt-1 text-green-600">
-                    <CheckCircle className="w-4 h-4 mx-auto mb-1" />
-                    <p className="text-[8px] font-black uppercase">
-                      MÊS ENCERRADO PELO CHEFE:
-                    </p>
-                    <p className="text-[7px] font-black uppercase">
-                      {closure.user}
-                    </p>
-                    <p className="text-[7px] opacity-70 uppercase">
-                      DATA: {closure.date}
-                    </p>
-                  </div>
-                );
-              }
-
-              return (
-                <div className="w-64 border-t border-black text-center pt-1">
-                  <p className="text-[8px] font-black uppercase">
-                    ASSINATURA DO ÚLTIMO CHEFE (FECHAMENTO DO MÊS)
-                  </p>
-                  <p className="text-[7px] text-gray-400">
-                    ENCERRADO EM: ____/____/202__
-                  </p>
-                  <button
-                    onClick={() => setShowClosureModal(true)}
-                    className="mt-2 px-3 py-1 bg-blue-600 text-white rounded text-[8px] font-black uppercase no-print hover:bg-blue-700 transition-all active:scale-95 flex items-center gap-1 mx-auto"
-                  >
-                    <Lock className="w-3 h-3" /> Assinar Fechamento
-                  </button>
-                </div>
-              );
-            })()}
-          </div>
         </div>
       </div>
     );
@@ -3569,7 +3557,7 @@ export const Reports: React.FC<ReportsProps> = ({
 
                     if (!isMaster) {
                       if (userPerms.canSign !== true || userPerms.signAsChefeMotoristas !== true) {
-                        alert("Acesso Negado: Seu usuário não tem permissão para assinar ou atuar como CHEFE DOS MOTORISTAS.");
+                        alert("Acesso Negado: Seu usuário não tem permissão para assinar ou atuar como CHEFE DOS MOTORISTAS.\n\nEnvie uma mensagem para o Administrador do Sistema para solicitar essa permissão.");
                         return;
                       }
                     }
@@ -4686,6 +4674,26 @@ export const Reports: React.FC<ReportsProps> = ({
                 </p>
               </div>
 
+              {closureError && (
+                <div className="p-4 bg-red-50 border-2 border-red-200 rounded-2xl text-center space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                  <p className="text-[10px] font-black text-red-700 leading-normal uppercase">
+                    {closureError}
+                  </p>
+                  {closureError.includes("Acesso Negado") && (
+                    <a
+                      href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                        `Olá! Sou militar operacional do posto e gostaria de solicitar ao Administrador a permissão de Fechamento Mensal (Chefe dos Motoristas) para o meu usuário '${closureAuth.username}' no CheckViatura Pro.`
+                      )}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white font-black rounded-lg text-[9px] uppercase tracking-wider transition-all w-full"
+                    >
+                      Solicitar Permissão
+                    </a>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-4">
                 <div className="space-y-1">
                   <label className="text-[9px] font-black text-gray-500 uppercase ml-1">
@@ -4700,6 +4708,9 @@ export const Reports: React.FC<ReportsProps> = ({
                         username: e.target.value,
                       })
                     }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleMonthClosure();
+                    }}
                     placeholder="USUÁRIO"
                     className="w-full border-2 rounded-2xl p-4 text-center font-black uppercase focus:border-blue-500 outline-none transition-all"
                   />
@@ -4708,41 +4719,59 @@ export const Reports: React.FC<ReportsProps> = ({
                   <label className="text-[9px] font-black text-gray-500 uppercase ml-1">
                     Senha
                   </label>
-                  <input
-                    type="password"
-                    value={closureAuth.password}
-                    onChange={(e) =>
-                      setClosureAuth({
-                        ...closureAuth,
-                        password: e.target.value,
-                      })
-                    }
-                    placeholder="SENHA"
-                    className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-blue-500 outline-none transition-all"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showClosurePassword ? "text" : "password"}
+                      value={closureAuth.password}
+                      onChange={(e) =>
+                        setClosureAuth({
+                          ...closureAuth,
+                          password: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleMonthClosure();
+                      }}
+                      placeholder="SENHA"
+                      className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-blue-500 outline-none transition-all pr-12"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowClosurePassword(!showClosurePassword)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                    >
+                      {showClosurePassword ? (
+                        <EyeOff className="w-4 h-4" />
+                      ) : (
+                        <Eye className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <button
-                onClick={handleMonthClosure}
-                disabled={isClosingMonth}
-                className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-blue-700 transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isClosingMonth ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Lock className="w-4 h-4" />
-                )}
-                Assinar e Encerrar
-              </button>
+              <div className="space-y-2">
+                <button
+                  onClick={handleMonthClosure}
+                  disabled={isClosingMonth}
+                  className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-blue-700 transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isClosingMonth ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Lock className="w-4 h-4" />
+                  )}
+                  Assinar e Encerrar
+                </button>
 
-              <button
-                onClick={() => setShowClosureModal(false)}
-                className="w-full text-gray-400 font-bold text-[10px] uppercase hover:text-gray-600"
-                disabled={isClosingMonth}
-              >
-                Cancelar
-              </button>
+                <button
+                  onClick={() => setShowClosureModal(false)}
+                  className="w-full text-gray-400 font-bold text-[10px] uppercase hover:text-gray-600 py-2"
+                  disabled={isClosingMonth}
+                >
+                  Cancelar
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -4781,6 +4810,26 @@ export const Reports: React.FC<ReportsProps> = ({
                 </p>
               </div>
 
+              {sigError && (
+                <div className="p-4 bg-red-50 border-2 border-red-200 rounded-2xl text-center space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                  <p className="text-[10px] font-black text-red-700 leading-normal uppercase">
+                    {sigError}
+                  </p>
+                  {sigError.includes("Acesso Negado") && (
+                    <a
+                      href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                        `Olá! Sou militar operacional e gostaria de solicitar ao Administrador do Sistema a permissão de assinatura para a função de '${signatureRole.label}' para o meu usuário '${sigAuth.username}' no CheckViatura Pro.`
+                      )}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white font-black rounded-lg text-[9px] uppercase tracking-wider transition-all w-full"
+                    >
+                      Solicitar Permissão
+                    </a>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-4">
                 <div className="space-y-1">
                   <label className="text-[9px] font-black text-gray-500 uppercase ml-1">
@@ -4795,6 +4844,9 @@ export const Reports: React.FC<ReportsProps> = ({
                         username: e.target.value,
                       })
                     }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleConfirmSignature();
+                    }}
                     placeholder="USUÁRIO"
                     className="w-full border-2 rounded-2xl p-4 text-center font-black uppercase focus:border-purple-500 outline-none transition-all"
                   />
@@ -4803,44 +4855,62 @@ export const Reports: React.FC<ReportsProps> = ({
                   <label className="text-[9px] font-black text-gray-500 uppercase ml-1">
                     Senha
                   </label>
-                  <input
-                    type="password"
-                    value={sigAuth.password}
-                    onChange={(e) =>
-                      setSigAuth({
-                        ...sigAuth,
-                        password: e.target.value,
-                      })
-                    }
-                    placeholder="SENHA"
-                    className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-purple-500 outline-none transition-all"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showSigPassword ? "text" : "password"}
+                      value={sigAuth.password}
+                      onChange={(e) =>
+                        setSigAuth({
+                          ...sigAuth,
+                          password: e.target.value,
+                        })
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleConfirmSignature();
+                      }}
+                      placeholder="SENHA"
+                      className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-purple-500 outline-none transition-all pr-12"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSigPassword(!showSigPassword)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                    >
+                      {showSigPassword ? (
+                        <EyeOff className="w-4 h-4" />
+                      ) : (
+                        <Eye className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <button
-                onClick={handleConfirmSignature}
-                disabled={isSigning}
-                className="w-full bg-purple-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-purple-700 transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isSigning ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Lock className="w-4 h-4" />
-                )}
-                Confirmar Assinatura
-              </button>
+              <div className="space-y-2">
+                <button
+                  onClick={handleConfirmSignature}
+                  disabled={isSigning}
+                  className="w-full bg-purple-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-purple-700 transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isSigning ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Lock className="w-4 h-4" />
+                  )}
+                  Confirmar Assinatura
+                </button>
 
-              <button
-                onClick={() => {
-                  setShowSignatureModal(false);
-                  setSignatureRole(null);
-                }}
-                className="w-full text-gray-400 font-bold text-[10px] uppercase hover:text-gray-600"
-                disabled={isSigning}
-              >
-                Cancelar
-              </button>
+                <button
+                  onClick={() => {
+                    setShowSignatureModal(false);
+                    setSignatureRole(null);
+                  }}
+                  className="w-full text-gray-400 font-bold text-[10px] uppercase hover:text-gray-600 py-2"
+                  disabled={isSigning}
+                >
+                  Cancelar
+                </button>
+              </div>
             </div>
           </div>
         </div>
