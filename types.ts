@@ -76,6 +76,11 @@ export interface UserPermissions {
   reports: boolean;
   settings: boolean;
   admin: boolean;
+  canSign?: boolean;
+  signAsChefeMotoristas?: boolean;
+  signAsCmtProntidao?: boolean;
+  signAsCmtPosto?: boolean;
+  signAsCmtSgb?: boolean;
 }
 
 export interface User {

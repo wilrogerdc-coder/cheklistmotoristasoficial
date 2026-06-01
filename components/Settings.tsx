@@ -74,6 +74,11 @@ interface AuditUser {
     reports: boolean;
     settings: boolean;
     admin: boolean;
+    canSign?: boolean;
+    signAsChefeMotoristas?: boolean;
+    signAsCmtProntidao?: boolean;
+    signAsCmtPosto?: boolean;
+    signAsCmtSgb?: boolean;
   };
   createdAt?: string;
 }
@@ -83,7 +88,7 @@ interface SettingsProps {
   currentUser: User | null;
   onSave: (newSettings: AppSettings) => void;
   onClose: () => void;
-  initialTab?: 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud';
+  initialTab?: 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login';
   setCurrentUser: (user: User | null) => void;
   googleUser: any;
   onGoogleSignIn: () => void;
@@ -107,10 +112,77 @@ export const Settings: React.FC<SettingsProps> = ({
   connectionStatus,
   onCheckConnection
 }) => {
-  const [activeTab, setActiveTab] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login'>(initialTab);
   const [isSettingsUnlocked, setIsSettingsUnlocked] = useState(false);
   const [unlockUsername, setUnlockUsername] = useState('');
   const [unlockPassword, setUnlockPassword] = useState('');
+
+  const isTabAccessible = (tabId: string) => {
+    if (tabId === 'login') return true;
+    if (tabId === 'manual' || tabId === 'about') return true;
+
+    // Se é superOnly, precisa do login Cavalieri (mestre)
+    if (tabId === 'cloud') {
+      return currentUser?.username.toLowerCase() === 'cavalieri';
+    }
+
+    // Se as configurações estão desbloqueadas por senha/login de ajustes ou master
+    if (isSettingsUnlocked) {
+      if (!currentUser) return true; // Desbloqueio master de emergência sem usuário logado no app
+      if (currentUser.username.toLowerCase() === 'cavalieri') return true;
+      
+      const tabPermissionMap: Record<string, string> = {
+        stations: 'settings',
+        vehicles: 'settings',
+        users: 'settings',
+        items: 'settings',
+        images: 'settings',
+        style: 'settings',
+        admin: 'admin',
+        report_editor: 'reports',
+        reports: 'reports',
+      };
+      const perm = tabPermissionMap[tabId];
+      if (perm) {
+        return !!(currentUser.permissions as any)[perm];
+      }
+      return true;
+    }
+
+    // Se não está desbloqueado, o usuário ainda pode acessar caso tenha permissão específica direta no login do app
+    if (currentUser) {
+      if (currentUser.username.toLowerCase() === 'cavalieri') return true;
+      const tabPermissionMap: Record<string, string> = {
+        stations: 'settings',
+        vehicles: 'settings',
+        users: 'settings',
+        items: 'settings',
+        images: 'settings',
+        style: 'settings',
+        admin: 'admin',
+        report_editor: 'reports',
+        reports: 'reports',
+      };
+      const perm = tabPermissionMap[tabId];
+      if (perm) {
+        return !!(currentUser.permissions as any)[perm];
+      }
+    }
+
+    return false;
+  };
+
+  useEffect(() => {
+    if (currentUser && (currentUser.permissions?.settings || currentUser.username.toLowerCase() === 'cavalieri')) {
+      setIsSettingsUnlocked(true);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!isTabAccessible(activeTab)) {
+      setActiveTab('manual');
+    }
+  }, [activeTab, isSettingsUnlocked, currentUser]);
 
   const [localSettings, setLocalSettings] = useState<AppSettings>(() => {
     const s = { ...settings };
@@ -201,7 +273,12 @@ export const Settings: React.FC<SettingsProps> = ({
       checklist: true, 
       reports: false, 
       settings: false,
-      admin: false 
+      admin: false,
+      canSign: false,
+      signAsChefeMotoristas: false,
+      signAsCmtProntidao: false,
+      signAsCmtPosto: false,
+      signAsCmtSgb: false
     } 
   });
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
@@ -423,11 +500,16 @@ export const Settings: React.FC<SettingsProps> = ({
       password: user.password,
       name: user.name,
       rank: user.rank,
-      permissions: user.permissions || {
-        checklist: true,
-        reports: false,
-        settings: false,
-        admin: false
+      permissions: {
+        checklist: user.permissions?.checklist ?? true,
+        reports: user.permissions?.reports ?? false,
+        settings: user.permissions?.settings ?? false,
+        admin: user.permissions?.admin ?? false,
+        canSign: user.permissions?.canSign ?? false,
+        signAsChefeMotoristas: user.permissions?.signAsChefeMotoristas ?? false,
+        signAsCmtProntidao: user.permissions?.signAsCmtProntidao ?? false,
+        signAsCmtPosto: user.permissions?.signAsCmtPosto ?? false,
+        signAsCmtSgb: user.permissions?.signAsCmtSgb ?? false,
       }
     });
     setEditingUserId(user.id || user.username);
@@ -443,7 +525,12 @@ export const Settings: React.FC<SettingsProps> = ({
         checklist: true, 
         reports: false, 
         settings: false,
-        admin: false 
+        admin: false,
+        canSign: false,
+        signAsChefeMotoristas: false,
+        signAsCmtProntidao: false,
+        signAsCmtPosto: false,
+        signAsCmtSgb: false
       } 
     });
     setEditingUserId(null);
@@ -688,7 +775,12 @@ export const Settings: React.FC<SettingsProps> = ({
         checklist: true,
         reports: true,
         settings: false, // Por padrão, novos usuários não têm acesso aos ajustes
-        admin: false
+        admin: false,
+        canSign: false,
+        signAsChefeMotoristas: false,
+        signAsCmtProntidao: false,
+        signAsCmtPosto: false,
+        signAsCmtSgb: false
       }
     };
     
@@ -758,6 +850,7 @@ export const Settings: React.FC<SettingsProps> = ({
     // Suporte ao usuário mestre legacy/emergência
     if (unlockUsername.toLowerCase() === 'cavalieri' && (unlockPassword === (localSettings.settingsPassword || 'cavalieri') || unlockPassword === 'tricolor')) {
       setIsSettingsUnlocked(true);
+      setActiveTab('stations');
       return;
     }
 
@@ -770,49 +863,17 @@ export const Settings: React.FC<SettingsProps> = ({
     if (matchedUser) {
       setIsSettingsUnlocked(true);
       setCurrentUser(matchedUser);
+      if (matchedUser.permissions?.checklist) {
+         setActiveTab('manual');
+      } else if (matchedUser.permissions?.reports) {
+         setActiveTab('reports');
+      } else {
+         setActiveTab('manual');
+      }
     } else {
       alert('Acesso Negado: Usuário sem permissão de ajustes ou credenciais incorretas.');
     }
   };
-
-  if (!isSettingsUnlocked) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] p-8 space-y-6">
-        <div className="bg-red-600 p-4 rounded-3xl shadow-xl">
-          <ShieldAlert className="w-10 h-10 text-white" />
-        </div>
-        <div className="text-center">
-          <h3 className="text-xl font-black text-gray-900 uppercase">Área Restrita</h3>
-          <p className="text-xs text-gray-400 font-bold">DIGITE CREDENCIAIS COM PERMISSÃO DE AJUSTES</p>
-        </div>
-        <form onSubmit={handleSettingsUnlock} className="flex flex-col gap-3 w-full max-w-xs">
-          <div className="space-y-1">
-             <label className="text-[9px] font-black text-gray-500 uppercase ml-1">Usuário</label>
-             <input 
-              type="text" 
-              autoFocus
-              value={unlockUsername} 
-              onChange={e => setUnlockUsername(e.target.value)} 
-              placeholder="USUÁRIO" 
-              className="w-full border-2 rounded-2xl p-4 text-center font-black uppercase focus:border-red-500 outline-none transition-all"
-            />
-          </div>
-          <div className="space-y-1">
-             <label className="text-[9px] font-black text-gray-500 uppercase ml-1">Senha</label>
-             <input 
-              type="password" 
-              value={unlockPassword} 
-              onChange={e => setUnlockPassword(e.target.value)} 
-              placeholder="SENHA" 
-              className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-red-500 outline-none transition-all"
-            />
-          </div>
-          <button type="submit" className="bg-red-600 text-white font-black py-4 rounded-2xl shadow-lg hover:bg-red-700 transition-all uppercase tracking-widest text-xs mt-2">Entrar nos Ajustes</button>
-          <button onClick={onClose} type="button" className="text-gray-400 font-bold text-[10px] uppercase hover:text-gray-600 mt-2">Voltar</button>
-        </form>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -837,19 +898,9 @@ export const Settings: React.FC<SettingsProps> = ({
           { id: 'cloud', label: 'Nuvem', icon: Cloud, superOnly: true },
           { id: 'report_editor', label: 'Editor Relat.', icon: Edit2, permission: 'reports' },
           { id: 'reports', label: 'Relatórios', icon: FileText, permission: 'reports' },
-          { id: 'about', label: 'SOBRE', icon: Info }
-        ].filter(tab => {
-          if (!tab.permission && !tab.superOnly) return true;
-          // Se não houver usuário logado (Visitante), permitimos ver abas não restritas
-          if (!currentUser) return !tab.superOnly;
-          // Superusuário master
-          if (currentUser.username.toLowerCase() === 'cavalieri') return true;
-          
-          if (tab.superOnly) return false;
-
-          // Verificar permissão específica
-          return (currentUser.permissions as any)[tab.permission!];
-        }).map(tab => (
+          { id: 'about', label: 'SOBRE', icon: Info },
+          ...(!isSettingsUnlocked ? [{ id: 'login', label: 'Entrar nos Ajustes', icon: Lock }] : [])
+        ].filter(tab => isTabAccessible(tab.id)).map(tab => (
           <button 
             key={tab.id} 
             onClick={() => handleTabChange(tab.id as any)} 
@@ -1181,7 +1232,12 @@ export const Settings: React.FC<SettingsProps> = ({
                       { id: 'checklist', label: 'Checklist', icon: ClipboardCheck },
                       { id: 'reports', label: 'Relatórios', icon: FileSearch },
                       { id: 'settings', label: 'Ajustes', icon: ShieldCheck },
-                      { id: 'admin', label: 'Auditoria', icon: Lock }
+                      { id: 'admin', label: 'Auditoria', icon: Lock },
+                      { id: 'canSign', label: 'Assinar Doc', icon: ShieldCheck },
+                      { id: 'signAsChefeMotoristas', label: 'Ch. Motoristas', icon: UserCheck },
+                      { id: 'signAsCmtProntidao', label: 'CMT Prontidão', icon: UserCheck },
+                      { id: 'signAsCmtPosto', label: 'CMT Posto', icon: UserCheck },
+                      { id: 'signAsCmtSgb', label: 'CMT SGB', icon: UserCheck }
                     ].map((perm: any) => {
                       const hasPerm = (u.permissions as any)[perm.id];
                       return (
@@ -1594,6 +1650,34 @@ export const Settings: React.FC<SettingsProps> = ({
                              </div>
 
                              <div className="flex gap-2">
+                                 <div className="space-y-4 border-t pt-4">
+                                    <h5 className="text-[9px] font-black text-amber-600 uppercase flex items-center gap-1">🔒 Assinaturas Digitais e Funções Autorizadas</h5>
+                                    <div className="grid grid-cols-1 gap-2">
+                                       <label className="flex items-center gap-2 p-3 border border-amber-200 bg-amber-50 rounded-xl cursor-pointer hover:bg-amber-100 transition-colors">
+                                          <input type="checkbox" checked={newUser.permissions?.canSign || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, canSign: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500" />
+                                          <span className="text-[10px] font-black uppercase text-amber-900">Permitir Assinar Documentos</span>
+                                       </label>
+                                       <div className="grid grid-cols-2 gap-2 pl-2 border-l-2 border-amber-200">
+                                          <label className="flex items-center gap-2 p-2 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors bg-white">
+                                             <input type="checkbox" checked={newUser.permissions?.signAsChefeMotoristas || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, signAsChefeMotoristas: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500" />
+                                             <span className="text-[9px] font-black uppercase text-purple-600">Chefe Motoristas</span>
+                                          </label>
+                                          <label className="flex items-center gap-2 p-2 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors bg-white">
+                                             <input type="checkbox" checked={newUser.permissions?.signAsCmtProntidao || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, signAsCmtProntidao: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500" />
+                                             <span className="text-[9px] font-black uppercase text-purple-600">CMT Prontidão</span>
+                                          </label>
+                                          <label className="flex items-center gap-2 p-2 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors bg-white">
+                                             <input type="checkbox" checked={newUser.permissions?.signAsCmtPosto || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, signAsCmtPosto: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500" />
+                                             <span className="text-[9px] font-black uppercase text-purple-600">CMT Posto</span>
+                                          </label>
+                                          <label className="flex items-center gap-2 p-2 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors bg-white">
+                                             <input type="checkbox" checked={newUser.permissions?.signAsCmtSgb || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, signAsCmtSgb: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500" />
+                                             <span className="text-[9px] font-black uppercase text-purple-600">CMT SGB</span>
+                                          </label>
+                                       </div>
+                                    </div>
+                                 </div>
+
                                 <button onClick={handleSaveUser} disabled={isSavingUser} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg flex items-center justify-center gap-2 transition-all">
                                    {isSavingUser ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                                    {editingUserId ? 'Atualizar Dados' : 'Salvar Credenciais'}
@@ -1629,6 +1713,11 @@ export const Settings: React.FC<SettingsProps> = ({
                                             {u.permissions?.reports && <span className="text-[7px] font-black px-1.5 py-0.5 bg-purple-100 text-purple-600 rounded uppercase">Relatórios</span>}
                                             {u.permissions?.settings && <span className="text-[7px] font-black px-1.5 py-0.5 bg-blue-100 text-blue-600 rounded uppercase">Ajustes</span>}
                                             {u.permissions?.admin && <span className="text-[7px] font-black px-1.5 py-0.5 bg-red-100 text-red-600 rounded uppercase">Auditoria</span>}
+                                            {u.permissions?.canSign && <span className="text-[7px] font-black px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded uppercase">Assinar Doc</span>}
+                                            {u.permissions?.signAsChefeMotoristas && <span className="text-[7px] font-black px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded uppercase">Ch. Mot.</span>}
+                                            {u.permissions?.signAsCmtProntidao && <span className="text-[7px] font-black px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded uppercase">Cmt Pront.</span>}
+                                            {u.permissions?.signAsCmtPosto && <span className="text-[7px] font-black px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded uppercase">Cmt Posto</span>}
+                                            {u.permissions?.signAsCmtSgb && <span className="text-[7px] font-black px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded uppercase">Cmt Sgb</span>}
                                          </div>
                                      </div>
                                   </div>
@@ -2054,6 +2143,42 @@ export const Settings: React.FC<SettingsProps> = ({
                 As alterações realizadas aqui serão refletidas em todo o sistema após você clicar em "Aplicar Ajustes".
               </p>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'login' && (
+          <div className="p-12 flex flex-col items-center justify-center space-y-6">
+            <div className="bg-red-600 p-4 rounded-3xl shadow-xl">
+              <ShieldAlert className="w-10 h-10 text-white" />
+            </div>
+            <div className="text-center">
+              <h3 className="text-xl font-black text-gray-900 uppercase">Área Restrita</h3>
+              <p className="text-xs text-gray-400 font-bold">DIGITE CREDENCIAIS COM PERMISSÃO DE AJUSTES</p>
+            </div>
+            <form onSubmit={handleSettingsUnlock} className="flex flex-col gap-3 w-full max-w-xs">
+              <div className="space-y-1">
+                 <label className="text-[9px] font-black text-gray-500 uppercase ml-1">Usuário</label>
+                 <input 
+                  type="text" 
+                  autoFocus
+                  value={unlockUsername} 
+                  onChange={e => setUnlockUsername(e.target.value)} 
+                  placeholder="USUÁRIO" 
+                  className="w-full border-2 rounded-2xl p-4 text-center font-black uppercase focus:border-red-500 outline-none transition-all"
+                />
+              </div>
+              <div className="space-y-1">
+                 <label className="text-[9px] font-black text-gray-400 uppercase ml-1">Senha</label>
+                 <input 
+                  type="password" 
+                  value={unlockPassword} 
+                  onChange={e => setUnlockPassword(e.target.value)} 
+                  placeholder="SENHA" 
+                  className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-red-500 outline-none transition-all"
+                />
+              </div>
+              <button type="submit" className="bg-red-600 hover:bg-red-700 text-white font-black py-4 rounded-2xl shadow-lg transition-all uppercase tracking-widest text-xs mt-2">Entrar nos Ajustes</button>
+            </form>
           </div>
         )}
       </div>

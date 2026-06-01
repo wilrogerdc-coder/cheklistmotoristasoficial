@@ -58,7 +58,7 @@ const App: React.FC = () => {
   const [loginPassword, setLoginPassword] = useState('');
   
   const [view, setView] = useState<'checklist' | 'settings'>('checklist');
-  const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor'>('items');
+  const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login'>('items');
   const [showDamageMap, setShowDamageMap] = useState(true);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -1006,9 +1006,10 @@ const App: React.FC = () => {
 
         {view === 'checklist' ? (
           <>
-            {hasPermission('settings') && (
-              <button onClick={() => { setActiveTabInSettings('items'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-blue-600 transition-colors"><SettingsIcon className="w-5 h-5 text-blue-500" /><span className="text-xs font-bold hidden sm:inline">Ajustes</span></button>
-            )}
+            <button onClick={() => { setActiveTabInSettings('manual'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-blue-600 transition-colors">
+              <SettingsIcon className="w-5 h-5 text-blue-500" />
+              <span className="text-xs font-bold hidden sm:inline">Ajustes / Manual</span>
+            </button>
             
             {hasPermission('reports') && (
               <>
