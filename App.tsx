@@ -664,42 +664,47 @@ const App: React.FC = () => {
     const targetUrlWithAction = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=saveLog`;
     console.log("Enviando dados para o Google Sheets...", { id: logData.id, size: logData.fullData.length, url: targetUrlWithAction });
 
-    try {
-      console.log("Payload para envio:", logData);
-      
-      // Usamos text/plain para evitar problemas de CORS (preflight) com Google Apps Script
-      const response = await fetch(targetUrlWithAction, {
-        method: 'POST',
-        mode: 'cors',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify(logData)
-      }).catch(err => {
-        console.warn("Erro CORS ou Rede, tentando modo no-cors...", err);
-        return fetch(targetUrlWithAction, {
+    // Promisify the fetch to ensure we can await it even if it falls back
+    return new Promise<void>(async (resolve) => {
+      try {
+        console.log("Payload para envio:", logData);
+        
+        // Usamos text/plain para evitar problemas de CORS (preflight) com Google Apps Script
+        const response = await fetch(targetUrlWithAction, {
           method: 'POST',
-          mode: 'no-cors',
+          mode: 'cors',
           headers: {
             'Content-Type': 'text/plain;charset=utf-8',
           },
           body: JSON.stringify(logData)
+        }).catch(err => {
+          console.warn("Erro CORS ou Rede, tentando modo no-cors...", err);
+          return fetch(targetUrlWithAction, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: {
+              'Content-Type': 'text/plain;charset=utf-8',
+            },
+            body: JSON.stringify(logData)
+          });
         });
-      });
 
-      if (response && response.type !== 'opaque') {
-        const result = await response.json();
-        if (result.result === 'success') {
-          console.log("Log salvo com sucesso no Google Sheets");
+        if (response && response.type !== 'opaque') {
+          const result = await response.json();
+          if (result.result === 'success') {
+            console.log("Log salvo com sucesso no Google Sheets");
+          } else {
+            console.error("Erro retornado pelo script:", result.message);
+          }
         } else {
-          console.error("Erro retornado pelo script:", result.message);
+          console.log("Log enviado (modo no-cors). Verifique a planilha.");
         }
-      } else {
-        console.log("Log enviado (modo no-cors). Verifique a planilha.");
+        resolve();
+      } catch (err) {
+        console.error("Erro fatal ao salvar no Google Sheets:", err);
+        resolve(); // Resolve anyway to not block the main flow indefinitely
       }
-    } catch (err) {
-      console.error("Erro fatal ao salvar no Google Sheets:", err);
-    }
+    });
   };
 
   const handleVisualizarPdf = async () => {
@@ -755,12 +760,13 @@ const App: React.FC = () => {
     setPrintTimestamp(new Date().toLocaleString('pt-BR'));
     setShowExportMenu(false);
     setIsSaving(true);
-    await saveLogToGoogleSheets();
-    await saveAuditLog('CHECKLIST_FINALIZADO', `Checklist ${data.checklistType} finalizado para viatura ${data.prefix}`);
     
-    // Se tiver token do Google Real, salva também na planilha real
-    if (googleToken && settings.googleSpreadsheetId) {
-      try {
+    try {
+      await saveLogToGoogleSheets();
+      await saveAuditLog('CHECKLIST_FINALIZADO', `Checklist ${data.checklistType} finalizado para viatura ${data.prefix}`);
+      
+      // Se tiver token do Google Real, salva também na planilha real
+      if (googleToken && settings.googleSpreadsheetId) {
         const logToAppend: LogEntry = {
           ...data,
           date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
@@ -768,16 +774,44 @@ const App: React.FC = () => {
           signatureName: data.signatureName || ''
         } as any;
         await sheetsService.appendLog(googleToken, settings.googleSpreadsheetId, logToAppend);
-      } catch (err) {
-        console.error("Erro ao salvar log no Google Real:", err);
       }
+      
+      // Atualizar dados do dashboard em background
+      fetchDashboardData();
+      
+    } catch (err) {
+      console.error("Erro no processo de finalização:", err);
+      alert("Erro ao salvar dados. Verifique sua conexão ou as configurações da planilha.");
+    } finally {
+      setIsSaving(false);
     }
-
-    setIsSaving(false);
     
+    // Pequeno atraso para garantir que o loader sumiu antes de abrir o print
     setTimeout(() => {
       window.print();
-    }, 500);
+    }, 300);
+  };
+
+  const handleOnlySave = async () => {
+    if (data.items.some(item => item.status === 'PENDING')) {
+      alert("BLOQUEIO: Existem itens pendentes.");
+      return;
+    }
+    if (!data.prefix.trim() || !data.plate.trim() || !data.km.trim() || !data.signatureName?.trim()) {
+      alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios.");
+      return;
+    }
+
+    // setShowExportMenu(false); // Mantém aberto para permitir gerar PDF após gravar
+    setIsSaving(true);
+    await saveLogToGoogleSheets();
+    await saveAuditLog('CHECKLIST_SALVO', `Checklist ${data.checklistType} salvo manualmente para viatura ${data.prefix}`);
+    
+    // Atualizar dashboard
+    await fetchDashboardData();
+    
+    setIsSaving(false);
+    alert("Checklist salvo com sucesso! Agora você pode gerar o PDF se desejar.");
   };
 
   const hasVehicleImages = data.vehicleImages.some(img => img && img !== "");
@@ -1104,21 +1138,14 @@ const App: React.FC = () => {
           <>
             <div className="w-px h-6 bg-gray-200 mx-0.5"></div>
             
-            <div className="relative shrink-0">
-              <button 
-                onClick={() => setShowExportMenu(!showExportMenu)} 
-                className={`px-4 py-2 rounded-xl text-xs font-bold shadow-lg flex items-center gap-2 transition-all active:scale-95 ${showExportMenu ? 'bg-gray-800 text-white' : 'bg-blue-600 text-white'}`}
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Finalizar</span>
-              </button>
-              {showExportMenu && (
-                <div className="absolute top-full mt-3 left-0 bg-white border border-gray-100 rounded-xl shadow-2xl p-1.5 w-48 z-[110] animate-in slide-in-from-top-2">
-                  <button onClick={handleVisualizarPdf} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-green-50 text-gray-700 rounded-lg text-xs font-bold"><Printer className="w-4 h-4" /> Imprimir Relatório</button>
-                </div>
-              )}
-            </div>
-
+            <button 
+              onClick={handleVisualizarPdf} 
+              className={`px-4 py-2 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all active:scale-95 bg-blue-600 text-white hover:bg-blue-700 shrink-0`}
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>FINALIZAR</span>
+            </button>
+            
             <div className="w-px h-6 bg-gray-200 mx-0.5"></div>
             
             <button 
