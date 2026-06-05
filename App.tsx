@@ -20,7 +20,8 @@ import {
   AspectRatio,
   User,
   Vehicle,
-  Station
+  Station,
+  Justification
 } from './types';
 import { 
   initAuth, 
@@ -29,6 +30,7 @@ import {
   getAccessToken 
 } from './services/googleAuth';
 import { sheetsService } from './services/googleSheets';
+import { FleetDashboard } from './components/FleetDashboard';
 import { 
   Printer, 
   Settings as SettingsIcon,
@@ -50,7 +52,8 @@ import {
   CloudOff,
   RefreshCw,
   BookOpen,
-  Info
+  Info,
+  LayoutDashboard
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -59,9 +62,9 @@ const App: React.FC = () => {
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   
-  const [view, setView] = useState<'checklist' | 'settings'>('checklist');
+  const [view, setView] = useState<'checklist' | 'settings' | 'dashboard'>('checklist');
   const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login'>('items');
-  const [showDamageMap, setShowDamageMap] = useState(true);
+  const [showDamageMap, setShowDamageMap] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -70,7 +73,36 @@ const App: React.FC = () => {
   const [googleUser, setGoogleUser] = useState<any>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(null);
   const [printTimestamp, setPrintTimestamp] = useState<string>('');
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [justifications, setJustifications] = useState<Justification[]>([]);
+  const [isFetchingDashboardData, setIsFetchingDashboardData] = useState(false);
   const checklistRef = useRef<HTMLDivElement>(null);
+
+  const fetchDashboardData = async () => {
+    const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+    const targetUrl = rawUrl?.trim();
+    if (!targetUrl) return;
+
+    setIsFetchingDashboardData(true);
+    try {
+      const [logsRes, justRes] = await Promise.all([
+        fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getLogs`).then(r => r.ok ? r.json() : []),
+        fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getJustifications`).then(r => r.ok ? r.json() : [])
+      ]);
+      if (Array.isArray(logsRes)) setLogs(logsRes);
+      if (Array.isArray(justRes)) setJustifications(justRes);
+    } catch (err) {
+      console.error("Erro ao buscar dados do dashboard:", err);
+    } finally {
+      setIsFetchingDashboardData(false);
+    }
+  };
+
+  useEffect(() => {
+    if (view === 'dashboard') {
+      fetchDashboardData();
+    }
+  }, [view]);
   
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('checkviatura_settings');
@@ -797,6 +829,15 @@ const App: React.FC = () => {
               connectionStatus={connectionStatus}
               onCheckConnection={handleCheckConnection}
             />
+          ) : view === 'dashboard' ? (
+            <FleetDashboard 
+              logs={logs}
+              settings={settings}
+              justifications={justifications}
+              onRefresh={fetchDashboardData}
+              isLoading={isFetchingDashboardData}
+              onUpdateVehicles={(updatedVehicles) => handleSaveSettings({ ...settings, vehicles: updatedVehicles })}
+            />
           ) : (
             <>
               <section className="bg-gray-50/50 p-4 rounded-xl border border-gray-100 space-y-4 print:p-2 print:bg-transparent print:border-none">
@@ -1026,76 +1067,110 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="fixed top-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white/95 backdrop-blur-sm border border-gray-200 shadow-2xl px-5 py-3 rounded-2xl no-print z-[100]">
-        <div className="flex items-center gap-2 pr-3 border-r border-gray-200">
-           <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${googleUser ? 'bg-green-50' : 'bg-blue-50'}`}>
-              <UserIcon className={`w-4 h-4 ${googleUser ? 'text-green-600' : 'text-blue-600'}`} />
+      <div className="fixed top-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-white/95 backdrop-blur-md border border-gray-200 shadow-xl px-4 py-2 rounded-2xl no-print z-[100] max-w-[95vw] overflow-x-auto scrollbar-hide">
+        <div className="flex items-center gap-2 pr-2 border-r border-gray-200 shrink-0">
+           <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${googleUser ? 'bg-green-50' : (currentUser ? 'bg-blue-50' : 'bg-gray-50')}`}>
+              <UserIcon className={`w-4 h-4 ${googleUser ? 'text-green-600' : (currentUser ? 'text-blue-600' : 'text-gray-400')}`} />
            </div>
            <div className="flex flex-col">
-              <span className="text-[10px] font-black text-gray-900 leading-none truncate max-w-[80px] uppercase">{googleUser ? googleUser.displayName?.split(' ')[0] : (currentUser ? (currentUser.name || currentUser.username || '').split(' ')[0] : 'VISITANTE')}</span>
+              <span className="text-[9px] font-black text-gray-900 leading-none truncate max-w-[60px] uppercase">
+                {googleUser ? googleUser.displayName?.split(' ')[0] : (currentUser ? (currentUser.name || currentUser.username || '').split(' ')[0] : 'PERFIL')}
+              </span>
               {googleUser ? (
-                <div className="flex items-center gap-1">
-                  <Cloud className="w-2 h-2 text-green-500" />
-                  <span className="text-[7px] font-black text-green-500 uppercase">Sincronizado</span>
+                <div className="flex items-center gap-0.5">
+                  <Cloud className="w-1.5 h-1.5 text-green-500" />
+                  <span className="text-[6px] font-black text-green-500 uppercase">Cloud</span>
                 </div>
               ) : (
                 currentUser ? (
-                  <button onClick={handleLogout} className="text-[8px] font-black text-red-500 uppercase text-left hover:underline flex items-center gap-0.5"><LogOut className="w-2 h-2" /> Sair</button>
+                  <button onClick={handleLogout} className="text-[6px] font-black text-red-500 uppercase text-left hover:underline">Sair</button>
                 ) : (
-                  <button onClick={() => setShowLoginModal(true)} className="text-[8px] font-black text-blue-500 uppercase text-left hover:underline flex items-center gap-0.5"><Lock className="w-2 h-2" /> Entrar</button>
+                  <button onClick={() => setShowLoginModal(true)} className="text-[6px] font-black text-blue-500 uppercase text-left hover:underline">Acesso</button>
                 )
               )}
            </div>
         </div>
 
-        {view === 'checklist' ? (
+        {/* 2. Dashboard */}
+        <button 
+          onClick={() => setView('dashboard')} 
+          className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all shrink-0 ${view === 'dashboard' ? 'bg-blue-50 text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
+        >
+          <LayoutDashboard className="w-5 h-5" />
+          <span className="text-xs font-bold hidden md:inline">Dashboard</span>
+        </button>
+
+        {view === 'checklist' && hasPermission('checklist') && (
           <>
-            <button onClick={() => { setActiveTabInSettings('manual'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-blue-600 transition-colors">
-              <BookOpen className="w-5 h-5 text-blue-500" />
-              <span className="text-xs font-bold hidden sm:inline">Manual</span>
-            </button>
+            <div className="w-px h-6 bg-gray-200 mx-0.5"></div>
             
-            <div className="w-px h-6 bg-gray-200 mx-1"></div>
+            <div className="relative shrink-0">
+              <button 
+                onClick={() => setShowExportMenu(!showExportMenu)} 
+                className={`px-4 py-2 rounded-xl text-xs font-bold shadow-lg flex items-center gap-2 transition-all active:scale-95 ${showExportMenu ? 'bg-gray-800 text-white' : 'bg-blue-600 text-white'}`}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Finalizar</span>
+              </button>
+              {showExportMenu && (
+                <div className="absolute top-full mt-3 left-0 bg-white border border-gray-100 rounded-xl shadow-2xl p-1.5 w-48 z-[110] animate-in slide-in-from-top-2">
+                  <button onClick={handleVisualizarPdf} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-green-50 text-gray-700 rounded-lg text-xs font-bold"><Printer className="w-4 h-4" /> Imprimir Relatório</button>
+                </div>
+              )}
+            </div>
+
+            <div className="w-px h-6 bg-gray-200 mx-0.5"></div>
             
-            <button onClick={() => { setActiveTabInSettings('about'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-indigo-600 transition-colors">
-              <Info className="w-5 h-5 text-indigo-500" />
-              <span className="text-xs font-bold hidden sm:inline">Sobre</span>
+            <button 
+              onClick={() => setShowDamageMap(!showDamageMap)} 
+              className={`flex items-center gap-2 px-3 py-2 hover:bg-gray-50 rounded-xl transition-colors shrink-0 ${showDamageMap ? 'text-orange-600 bg-orange-50' : 'text-gray-400'}`}
+              title="Mapa de Avarias"
+            >
+              {showDamageMap ? <Map className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
+              <span className="text-xs font-bold hidden md:inline">Avarias</span>
             </button>
-
-            <div className="w-px h-6 bg-gray-200 mx-1"></div>
-
-            <button onClick={() => { setActiveTabInSettings('login'); setView('settings'); }} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl text-red-600 transition-colors">
-              <SettingsIcon className="w-5 h-5 text-red-500" />
-              <span className="text-xs font-bold hidden sm:inline">Ajustes</span>
-            </button>
-
-            {view === 'checklist' && hasPermission('checklist') && (
-              <>
-                <div className="w-px h-6 bg-gray-200 mx-1"></div>
-                
-                <button 
-                  onClick={() => setShowDamageMap(!showDamageMap)} 
-                  className={`flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-xl transition-colors ${showDamageMap ? 'text-orange-600' : 'text-gray-400'}`}
-                  title={showDamageMap ? "Ocultar Mapa de Avarias" : "Mostrar Mapa de Avarias"}
-                >
-                  {showDamageMap ? <Map className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
-                  <span className="text-xs font-bold hidden sm:inline">{showDamageMap ? 'Ocultar Mapa' : 'Mostrar Mapa'}</span>
-                </button>
-                
-                <div className="w-px h-6 bg-gray-200 mx-1"></div>
-
-                <button onClick={() => setShowExportMenu(!showExportMenu)} className={`px-5 py-2.5 rounded-xl text-sm font-bold shadow-lg flex items-center gap-2 transition-all active:scale-95 ${showExportMenu ? 'bg-gray-800 text-white' : 'bg-blue-600 text-white'}`}>Finalizar</button>
-                {showExportMenu && (
-                  <div className="absolute top-full mt-3 left-0 bg-white border rounded-xl shadow-2xl p-2 w-56 z-[110]">
-                    <button onClick={handleVisualizarPdf} className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-green-50 text-gray-700 rounded-lg text-xs font-bold"><Printer className="w-4 h-4" /> Visualizar e Imprimir</button>
-                  </div>
-                )}
-              </>
-            )}
           </>
-        ) : (
-          <button onClick={() => setView('checklist')} className="px-6 py-2 bg-gray-800 text-white rounded-xl text-sm font-bold flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Voltar ao Checklist</button>
         )}
+
+        <div className="w-px h-6 bg-gray-200 mx-0.5"></div>
+
+        {/* 3. Checklist Switcher */}
+        <button 
+          onClick={() => setView('checklist')} 
+          className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all shrink-0 ${view === 'checklist' ? 'bg-green-50 text-green-600 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
+        >
+          <RefreshCw className="w-5 h-5" />
+          <span className="text-xs font-bold hidden md:inline">Checklist</span>
+        </button>
+
+        <div className="w-px h-6 bg-gray-200 mx-0.5"></div>
+        
+        {/* Others - Manual/About/Settings */}
+        <div className="flex items-center gap-1">
+          <button 
+            onClick={() => { setActiveTabInSettings('manual'); setView('settings'); }} 
+            className={`p-2 rounded-xl transition-all shrink-0 ${view === 'settings' && activeTabInSettings === 'manual' ? 'bg-blue-50 text-blue-600' : 'text-gray-400 hover:bg-gray-50'}`}
+            title="Manual"
+          >
+            <BookOpen className="w-5 h-5" />
+          </button>
+          
+          <button 
+            onClick={() => { setActiveTabInSettings('about'); setView('settings'); }} 
+            className={`p-2 rounded-xl transition-all shrink-0 ${view === 'settings' && activeTabInSettings === 'about' ? 'bg-indigo-50 text-indigo-600' : 'text-gray-400 hover:bg-gray-50'}`}
+            title="Sobre"
+          >
+            <Info className="w-5 h-5" />
+          </button>
+
+          <button 
+            onClick={() => { setActiveTabInSettings('login'); setView('settings'); }} 
+            className={`p-2 rounded-xl transition-all shrink-0 ${view === 'settings' && (activeTabInSettings === 'login' || activeTabInSettings === 'admin') ? 'bg-red-50 text-red-600' : 'text-gray-400 hover:bg-gray-50'}`}
+            title="Ajustes"
+          >
+            <SettingsIcon className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       {showLoginModal && (

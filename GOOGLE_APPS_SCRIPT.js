@@ -126,8 +126,8 @@ function doPost(e) {
       let vSheet = sheet.getSheetByName('VIATURAS');
       if (!vSheet) vSheet = sheet.insertSheet('VIATURAS');
       vSheet.clear();
-      vSheet.appendRow(['ID', 'PREFIXO', 'PLACA', 'TIPO', 'POSTO']);
-      vehicles.forEach(v => vSheet.appendRow([v.id, v.prefix, v.plate, v.type, v.station || '']));
+      vSheet.appendRow(['ID', 'PREFIXO', 'PLACA', 'TIPO', 'POSTO', 'ALERTAS']);
+      vehicles.forEach(v => vSheet.appendRow([v.id, v.prefix, v.plate, v.type, v.station || '', JSON.stringify(v.alerts || [])]));
 
       // Sincronizar Postos
       let sSheet = sheet.getSheetByName('POSTOS');
@@ -384,12 +384,15 @@ function doGet(e) {
         headers.forEach((header, i) => {
           item[header] = row[i];
         });
+        let alerts = [];
+        try { alerts = JSON.parse(item['ALERTAS'] || '[]'); } catch(e) {}
         return {
           id: item['ID'] || '',
           prefix: item['PREFIXO'] || '',
           plate: item['PLACA'] || '',
           type: item['TIPO'] || 'LEVE/PESADA',
-          station: item['POSTO'] || ''
+          station: item['POSTO'] || '',
+          alerts: alerts
         };
       });
       return ContentService.createTextOutput(JSON.stringify(vehicles))

@@ -23,6 +23,18 @@ export interface Station {
   sgbId: string;
 }
 
+export interface MaintenanceAlert {
+  id: string;
+  type: 'KM' | 'DATE';
+  description: string;
+  targetKm?: number;
+  warnKmBefore?: number;
+  targetDate?: string;
+  warnDaysBefore?: number;
+  status: 'ACTIVE' | 'DONE';
+  createdAt: string;
+}
+
 export interface Vehicle {
   id: string;
   prefix: string;
@@ -31,6 +43,7 @@ export interface Vehicle {
   station: string;
   sgb?: string;
   gb?: string;
+  alerts?: MaintenanceAlert[];
 }
 
 export interface DamagePoint {
@@ -92,6 +105,15 @@ export interface User {
   permissions: UserPermissions;
 }
 
+export interface DocumentLink {
+  id: string;
+  name: string;
+  url: string;
+  category?: string;
+  description?: string;
+  params?: string; // Edit parameters or custom settings for the document link
+}
+
 export interface AppSettings {
   vehicleImages: string[];
   vehicleImageRatios?: AspectRatio[];
@@ -101,6 +123,7 @@ export interface AppSettings {
   users?: User[];
   sgbs?: SGB[];
   gbs?: GB[];
+  documentLinks?: DocumentLink[]; // Persistent document links inside settings/database
   headerTitle?: string;
   reportTitle?: string;
   weeklyLevesTitle?: string;
@@ -131,6 +154,7 @@ export interface AuditLog {
 export interface Justification {
   id: string;
   date: string;
+  dateRef?: string;
   type: string;
   vehicleType: string;
   station: string;

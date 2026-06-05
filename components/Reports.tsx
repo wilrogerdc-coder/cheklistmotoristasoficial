@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import { Justification, LogEntry, AppSettings, User } from "../types";
 import { Header } from "./Header";
 import { Footer } from "./Footer";
+import { FleetDashboard } from "./FleetDashboard";
 import {
   FileText,
   Download,
@@ -24,6 +25,7 @@ import {
   CheckCircle,
   Lock,
   ShieldCheck,
+  Shield,
 } from "lucide-react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
@@ -34,6 +36,7 @@ interface ReportsProps {
   currentUser: User | null;
   onFetch: (prefix?: string, month?: string) => Promise<void>;
   isLoading?: boolean;
+  onUpdateVehicles?: (vehicles: any[]) => void;
 }
 
 type ReportType =
@@ -48,6 +51,9 @@ type ReportType =
   | "weekly_leves"
   | "weekly_motos"
   | "weekly_ab"
+  | "retroactive_logs"
+  | "final_monthly_book"
+  | "fleet_dashboard"
   | null;
 
 export const Reports: React.FC<ReportsProps> = ({
@@ -56,6 +62,7 @@ export const Reports: React.FC<ReportsProps> = ({
   currentUser,
   onFetch,
   isLoading,
+  onUpdateVehicles
 }) => {
   const [activeReport, setActiveReport] = useState<ReportType>(null);
   const [monthFilter, setMonthFilter] = useState<string>(""); // Vazio por padrão para mostrar tudo
@@ -82,6 +89,14 @@ export const Reports: React.FC<ReportsProps> = ({
     username: "",
     password: "",
   });
+
+  const [justificationDrafts, setJustificationDrafts] = useState<Record<string, string>>({});
+  const [showJustificationAuthModal, setShowJustificationAuthModal] = useState(false);
+  const [pendingJustification, setPendingJustification] = useState<{
+    date: string;
+    text: string;
+    day: number;
+  } | null>(null);
 
   const fetchMonthClosures = async () => {
     const rawUrl = settings.googleSheetUrl;
@@ -262,11 +277,143 @@ export const Reports: React.FC<ReportsProps> = ({
       setIsSigning(false);
     }
   };
+
+  const handleConfirmJustificationAuth = async () => {
+    if (!pendingJustification || !justificationAuth.username || !justificationAuth.password) {
+      alert("Por favor, informe Usuário e Senha.");
+      return;
+    }
+
+    const rawUrl = settings.googleSheetUrl;
+    if (!rawUrl) {
+      alert("URL do banco de dados não configurada.");
+      return;
+    }
+
+    setIsSigning(true);
+    try {
+      const usersResp = await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=getUsers`);
+      const users = await usersResp.json();
+      const user = users.find((u: any) => 
+        u.username.toLowerCase() === justificationAuth.username.toLowerCase() && 
+        u.password.toString() === justificationAuth.password
+      );
+
+      if (!user) {
+        alert("Usuário ou Senha incorretos.");
+        setIsSigning(false);
+        return;
+      }
+
+      // Permissions check (same as in modal)
+      let userPerms = user.permissions || {};
+      if (typeof userPerms === 'string') {
+        try { userPerms = JSON.parse(userPerms); } catch (err) { userPerms = {}; }
+      }
+      const isMaster = user.username.toLowerCase() === 'cavalieri';
+      if (!isMaster) {
+        if (userPerms.canSign !== true || userPerms.signAsChefeMotoristas !== true) {
+          alert("Acesso Negado: Seu usuário não tem permissão de Chefe dos Motoristas.");
+          setIsSigning(false);
+          return;
+        }
+      }
+
+      const prefix = Array.from(selectedPrefixes)[0];
+      const jData: Justification = {
+        id: crypto.randomUUID(),
+        date: pendingJustification.date,
+        dateRef: pendingJustification.date,
+        type: activeReport || "GERAL",
+        vehicleType: prefix,
+        justification: pendingJustification.text,
+        author: `${user.rank || ''} ${user.name || user.username}`.trim(),
+        authorRank: user.rank || (user.permissions?.signAsChefeMotoristas ? "CHEFE DOS MOTORISTAS" : (user.rank || "SUPERVISOR")),
+        createdAt: new Date().toISOString(),
+        month: monthFilter,
+        status: "SIGNED" as const,
+        station: prefix,
+      };
+
+      // Force immediate local update with cloned array to trigger re-render
+      const newJustification: Justification = { ...jData };
+      setJustifications(prev => {
+        // Check if it already exists (to avoid duplicates)
+        const exists = prev.find(j => 
+          (j.id === newJustification.id) || 
+          (j.date === newJustification.date && j.vehicleType === newJustification.vehicleType && j.type === newJustification.type)
+        );
+        if (exists) return prev;
+        return [...prev, newJustification];
+      });
+
+      const payload = {
+        ...newJustification,
+        action: "saveJustification",
+      };
+
+      // Send to server (don't await to keep UI responsive)
+      fetch(rawUrl, {
+        method: "POST",
+        mode: "no-cors",
+        body: JSON.stringify(payload),
+      })
+      .then(() => {
+        console.log("Justification sent successfully to server");
+        // We could sync after a longer delay if we wanted to
+      })
+      .catch(err => {
+        console.error("Sync error:", err);
+        alert("Erro na conexão com o banco de dados, mas o registro foi salvo localmente.");
+      });
+
+      alert("REGISTRO REALIZADO E ASSINADO COM SUCESSO!");
+      setShowJustificationAuthModal(false);
+      setPendingJustification(null);
+      setJustificationAuth({ username: "", password: "" });
+      
+      // Clear draft for this day
+      setJustificationDrafts(prev => {
+        const next = { ...prev };
+        delete next[pendingJustification.day];
+        return next;
+      });
+
+      // NO REFRESH HERE to prevent stale fetch from overwriting local state
+    } catch (e) {
+      alert("Erro ao salvar justificativa.");
+    } finally {
+      setIsSigning(false);
+    }
+  };
+
   const [selectedPrefixes, setSelectedPrefixes] = useState<Set<string>>(
     new Set(),
   );
   const [prefixSearch, setPrefixSearch] = useState<string>("");
-  const [justifications, setJustifications] = useState<Justification[]>([]);
+  const [postoFilter, setPostoFilter] = useState<string>("");
+  const [bookConfig, setBookConfig] = useState({
+    includeDaily: true,
+    includeJustifications: true,
+    includeWeekly: false,
+    includeNovelties: false,
+    includeSynthetic: false,
+    includeAnalytical: false,
+  });
+  const [justifications, setJustifications] = useState<Justification[]>(() => {
+    // Try to load from localStorage on init
+    try {
+      const saved = localStorage.getItem("checkviatura_justifications");
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  // Persist to localStorage whenever changed
+  useEffect(() => {
+    localStorage.setItem("checkviatura_justifications", JSON.stringify(justifications));
+  }, [justifications]);
   const [isFetchingJustifications, setIsFetchingJustifications] =
     useState(false);
   const [showJustificationModal, setShowJustificationModal] = useState(false);
@@ -296,7 +443,59 @@ export const Reports: React.FC<ReportsProps> = ({
       const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
-        if (Array.isArray(data)) setJustifications(data);
+        if (Array.isArray(data)) {
+          // Santize data keys to ensure consistency
+          const sanitized = data.map((item: any) => {
+            const getValueByKeys = (keys: string[]) => {
+              for (const k of keys) {
+                if (item[k] !== undefined) return item[k];
+                if (item[k.toLowerCase()] !== undefined) return item[k.toLowerCase()];
+                if (item[k.toUpperCase()] !== undefined) return item[k.toUpperCase()];
+              }
+              const upperKeys = keys.map(k => k.toUpperCase());
+              for (const ik of Object.keys(item)) {
+                const normalizedIk = ik.toUpperCase().replace(/[\s_]/g, '');
+                if (upperKeys.includes(normalizedIk) || upperKeys.map(k => k.replace(/[\s_]/g, '')).includes(normalizedIk)) {
+                  return item[ik];
+                }
+              }
+              return undefined;
+            };
+
+            const id = getValueByKeys(['id', 'ID']) || crypto.randomUUID();
+            const dateVal = getValueByKeys(['date', 'dateRef', 'DATA_REFERENCIA', 'data_referencia']) || "";
+            const jType = getValueByKeys(['type', 'tipo', 'TIPO']) || "GERAL";
+            const vehicleType = getValueByKeys(['vehicleType', 'vehicle_type', 'TIPO_VEICULO', 'tipo_veiculo', 'station', 'posto']) || "";
+            const station = getValueByKeys(['station', 'posto', 'POSTO', 'vehicleType']) || "";
+            const justification = getValueByKeys(['justification', 'JUSTIFICATIVA', 'justificativa', 'obs', 'OBS']) || "";
+            const author = getValueByKeys(['author', 'AUTOR', 'autor', 'user', 'USER']) || "";
+            const authorRank = getValueByKeys(['authorRank', 'author_rank', 'RE', 're', 'rank', 'RANK']) || "";
+            const createdAt = getValueByKeys(['createdAt', 'created_at', 'CRIADO_EM', 'criado_em', 'time']) || new Date().toISOString();
+            const rawMonth = getValueByKeys(['month', 'MES', 'mes']) || "";
+            const month = rawMonth ? normalizeMonthString(rawMonth) : (dateVal ? parseLogDateToMonth(dateVal) : "");
+            const status = getValueByKeys(['status', 'STATUS']) || "SIGNED";
+
+            return {
+              id,
+              date: dateVal,
+              type: jType,
+              vehicleType,
+              station,
+              justification,
+              author,
+              authorRank,
+              createdAt,
+              month,
+              status
+            };
+          });
+
+          setJustifications(prev => {
+            const fetchedIds = new Set(sanitized.map(j => j.id));
+            const locals = prev.filter(j => !fetchedIds.has(j.id));
+            return [...sanitized, ...locals];
+          });
+        }
       }
     } catch (e) {
       console.error("Erro ao buscar justificativas:", e);
@@ -306,7 +505,7 @@ export const Reports: React.FC<ReportsProps> = ({
   };
 
   useEffect(() => {
-    if (activeReport && monthFilter && selectedPrefixes.size > 0) {
+    if (activeReport && selectedPrefixes.size > 0) {
       fetchMonthClosures();
       fetchJustifications();
     }
@@ -500,32 +699,99 @@ export const Reports: React.FC<ReportsProps> = ({
     return null;
   };
 
-  const parseLogDateToMonth = (dateStr: string) => {
-    if (!dateStr) return "";
-    // Se for ISO (YYYY-MM-DD...)
-    if (dateStr.includes("-") && dateStr.indexOf("-") === 4) {
-      return dateStr.substring(0, 7);
+  function normalizeMonthString(mStr: string | any): string {
+    if (!mStr) return "";
+    const trimmed = String(mStr).trim();
+    // check if format is YYYY-MM or YYYY-M
+    const match = trimmed.match(/^(\d{4})-(\d{1,2})$/);
+    if (match) {
+      return `${match[1]}-${match[2].padStart(2, "0")}`;
     }
-    // Se for pt-BR (DD/MM/YYYY...)
-    if (dateStr.includes("/")) {
-      const parts = dateStr.split("/");
-      if (parts.length >= 3) {
-        const month = parts[1].padStart(2, "0");
-        const yearPart = parts[2].split(" ")[0];
-        if (yearPart.length === 4) {
-          return `${yearPart}-${month}`;
-        }
-      }
+    // check if format is YYYY/MM or YYYY/M
+    const slashMatchYM = trimmed.match(/^(\d{4})\/(\d{1,2})$/);
+    if (slashMatchYM) {
+      return `${slashMatchYM[1]}-${slashMatchYM[2].padStart(2, "0")}`;
     }
-    // Fallback para Date object se possível
+    // Also try to parse using date components if it's a full date string like "2026-06-01T03:00:00.000Z"
+    const comps = parseDateToComponents(trimmed);
+    if (comps) {
+      return `${comps.year}-${comps.month.toString().padStart(2, "0")}`;
+    }
+    return trimmed;
+  }
+
+  function parseDateToComponents(dateStr: any): { year: number, month: number, day: number } | null {
+    if (!dateStr) return null;
+    const s = String(dateStr).trim();
+    const baseStr = s.split('T')[0].split(' ')[0];
+
+    // Dash format: YYYY-MM-DD
+    const dashMatch = baseStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (dashMatch) {
+      return {
+        year: parseInt(dashMatch[1], 10),
+        month: parseInt(dashMatch[2], 10),
+        day: parseInt(dashMatch[3], 10)
+      };
+    }
+
+    // Reverse dash format: DD-MM-YYYY
+    const revDashMatch = baseStr.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+    if (revDashMatch) {
+      return {
+        year: parseInt(revDashMatch[3], 10),
+        month: parseInt(revDashMatch[2], 10),
+        day: parseInt(revDashMatch[1], 10)
+      };
+    }
+
+    // Slash format: DD/MM/YYYY
+    const slashMatch = baseStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (slashMatch) {
+      return {
+        year: parseInt(slashMatch[3], 10),
+        month: parseInt(slashMatch[2], 10),
+        day: parseInt(slashMatch[1], 10)
+      };
+    }
+
+    // Slash format: YYYY/MM/DD
+    const slashMatchYMD = baseStr.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+    if (slashMatchYMD) {
+      return {
+        year: parseInt(slashMatchYMD[1], 10),
+        month: parseInt(slashMatchYMD[2], 10),
+        day: parseInt(slashMatchYMD[3], 10)
+      };
+    }
+
+    // Fallback: system Date parsing
     try {
-      const d = new Date(dateStr);
-      if (!isNaN(d.getTime())) {
-        return d.toISOString().substring(0, 7);
+      const dObj = new Date(dateStr);
+      if (!isNaN(dObj.getTime())) {
+        const isUTC = s.includes('Z') || s.includes('GMT+0000') || s.includes('UTC');
+        return {
+          year: isUTC ? dObj.getUTCFullYear() : dObj.getFullYear(),
+          month: isUTC ? (dObj.getUTCMonth() + 1) : (dObj.getMonth() + 1),
+          day: isUTC ? dObj.getUTCDate() : dObj.getDate()
+        };
       }
     } catch (e) {}
-    return "";
-  };
+
+    return null;
+  }
+
+  function isDateMatch(dateStr: any, targetYear: number, targetMonth: number, targetDay: number): boolean {
+    const comps = parseDateToComponents(dateStr);
+    if (!comps) return false;
+    return comps.year === targetYear && comps.month === targetMonth && comps.day === targetDay;
+  }
+
+  function parseLogDateToMonth(dateStr: string): string {
+    const comps = parseDateToComponents(dateStr);
+    if (!comps) return "";
+    return `${comps.year}-${comps.month.toString().padStart(2, "0")}`;
+  }
 
   const formatDate = (dateStr: string) => {
     if (!dateStr) return "";
@@ -726,6 +992,37 @@ export const Reports: React.FC<ReportsProps> = ({
     return Array.from(prefixes).sort();
   }, [logs]);
 
+  const uniqueStations = useMemo(() => {
+    const stations = new Set<string>();
+    if (settings.stations && settings.stations.length > 0) {
+      settings.stations.forEach((s) => {
+        if (s.name) stations.add(s.name);
+      });
+    }
+    settings.vehicles?.forEach((v) => {
+      if (v.station) stations.add(v.station);
+    });
+    return Array.from(stations).sort();
+  }, [settings.stations, settings.vehicles]);
+
+  const visiblePrefixes = useMemo(() => {
+    return uniquePrefixes.filter((prefix) => {
+      const matchesSearch =
+        !prefixSearch ||
+        prefix.includes(normalizePrefix(prefixSearch));
+
+      if (!postoFilter) return matchesSearch;
+      const vehicle = settings.vehicles?.find(
+        (v) => normalizePrefix(v.prefix) === prefix,
+      );
+      return (
+        matchesSearch &&
+        vehicle &&
+        normalizePrefix(vehicle.station) === normalizePrefix(postoFilter)
+      );
+    });
+  }, [uniquePrefixes, prefixSearch, postoFilter, settings.vehicles]);
+
   const uniqueMonths = useMemo(() => {
     const months = new Set<string>();
     logs.forEach((log) => {
@@ -779,11 +1076,15 @@ export const Reports: React.FC<ReportsProps> = ({
   };
 
   const selectAllPrefixes = () => {
-    setSelectedPrefixes(new Set(uniquePrefixes));
+    const newSelected = new Set(selectedPrefixes);
+    visiblePrefixes.forEach((p) => newSelected.add(p));
+    setSelectedPrefixes(newSelected);
   };
 
   const deselectAllPrefixes = () => {
-    setSelectedPrefixes(new Set());
+    const newSelected = new Set(selectedPrefixes);
+    visiblePrefixes.forEach((p) => newSelected.delete(p));
+    setSelectedPrefixes(newSelected);
   };
 
   const handlePrint = () => {
@@ -804,9 +1105,9 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   };
 
-  const renderDailyControlReport = () => {
+  const renderDailyControlReport = (customPrefix?: string) => {
     const prefixesArray = Array.from(selectedPrefixes);
-    if (prefixesArray.length !== 1) {
+    if (!customPrefix && prefixesArray.length !== 1) {
       return (
         <div className="p-10 text-center flex flex-col items-center gap-4 text-gray-400 font-bold uppercase">
           <AlertCircle className="w-12 h-12 text-blue-500 mb-4" />
@@ -824,7 +1125,7 @@ export const Reports: React.FC<ReportsProps> = ({
       );
     }
 
-    const selectedPrefix = prefixesArray[0];
+    const selectedPrefix = customPrefix || prefixesArray[0];
     const vehicle = settings.vehicles?.find(
       (v) => normalizePrefix(v.prefix) === selectedPrefix,
     );
@@ -838,8 +1139,15 @@ export const Reports: React.FC<ReportsProps> = ({
       return colors[(d - 1) % 3];
     };
 
+    const targetLogs = logs.filter((log) => {
+      const matchPrefix = normalizePrefix(log.prefix) === normalizePrefix(selectedPrefix);
+      const logMonth = parseLogDateToMonth(log.date);
+      const matchMonth = !monthFilter || logMonth === monthFilter;
+      return matchPrefix && matchMonth;
+    });
+
     const logsByDay: Record<number, LogEntry> = {};
-    filteredLogs.forEach((log) => {
+    targetLogs.forEach((log) => {
       if (parseLogDateToMonth(log.date) === monthFilter) {
         let dd = 0;
         const dateStr = String(log.date);
@@ -1056,10 +1364,10 @@ export const Reports: React.FC<ReportsProps> = ({
                     const dayStr = `${year}-${month.toString().padStart(2, "0")}-${d.toString().padStart(2, "0")}`;
                     const justification = justifications.find(
                       (j) =>
-                        j.month === monthFilter &&
+                        normalizeMonthString(j.month) === normalizeMonthString(monthFilter) &&
                         normalizePrefix(j.vehicleType) ===
                           normalizePrefix(selectedPrefix) &&
-                        String(j.date).startsWith(dayStr),
+                        isDateMatch(j.date || (j as any).dateRef, year, month, d),
                     );
                     if (justification) {
                       return (
@@ -1107,10 +1415,10 @@ export const Reports: React.FC<ReportsProps> = ({
                     const dayStr = `${year}-${month.toString().padStart(2, "0")}-${d.toString().padStart(2, "0")}`;
                     const justification = justifications.find(
                       (j) =>
-                        j.month === monthFilter &&
+                        normalizeMonthString(j.month) === normalizeMonthString(monthFilter) &&
                         normalizePrefix(j.vehicleType) ===
                           normalizePrefix(selectedPrefix) &&
-                        String(j.date).startsWith(dayStr),
+                        isDateMatch(j.date || (j as any).dateRef, year, month, d),
                     );
                     if (justification) {
                       return (
@@ -1299,9 +1607,10 @@ export const Reports: React.FC<ReportsProps> = ({
 
   const renderWeeklyControlReport = (
     vType: "LEVE/PESADA" | "MOTOCICLETA" | "AB/AÉREA",
+    customPrefix?: string,
   ) => {
     const prefixesArray = Array.from(selectedPrefixes);
-    if (prefixesArray.length !== 1) {
+    if (!customPrefix && prefixesArray.length !== 1) {
       return (
         <div className="p-10 text-center flex flex-col items-center gap-4">
           <AlertCircle className="w-12 h-12 text-blue-500" />
@@ -1322,16 +1631,23 @@ export const Reports: React.FC<ReportsProps> = ({
       );
     }
 
-    const selectedPrefix = prefixesArray[0];
+    const selectedPrefix = customPrefix || prefixesArray[0];
     const vehicle = settings.vehicles?.find(
       (v) => normalizePrefix(v.prefix) === selectedPrefix,
     );
     const [year, month] = monthFilter.split("-").map(Number);
     const weeks = ["1ª SEMANA", "2ª SEMANA", "3ª SEMANA", "4ª SEMANA"];
 
+    const targetLogs = logs.filter((log) => {
+      const matchPrefix = normalizePrefix(log.prefix) === normalizePrefix(selectedPrefix);
+      const logMonth = parseLogDateToMonth(log.date);
+      const matchMonth = !monthFilter || logMonth === monthFilter;
+      return matchPrefix && matchMonth;
+    });
+
     // Agrupa logs por semana (aproximado: 1-7, 8-14, 15-21, 22+)
     const logsByWeek: Record<number, LogEntry> = {};
-    filteredLogs.forEach((log) => {
+    targetLogs.forEach((log) => {
       // FILTRO: Somente logs marcados explicitamente como "Semanal"
       if (log.checklistType !== "Semanal") return;
 
@@ -1581,9 +1897,9 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   };
 
-  const renderDailyControlMotosReport = () => {
+  const renderDailyControlMotosReport = (customPrefix?: string) => {
     const prefixesArray = Array.from(selectedPrefixes);
-    if (prefixesArray.length !== 1) {
+    if (!customPrefix && prefixesArray.length !== 1) {
       return (
         <div className="p-10 text-center flex flex-col items-center gap-4">
           <AlertCircle className="w-12 h-12 text-blue-500" />
@@ -1612,7 +1928,7 @@ export const Reports: React.FC<ReportsProps> = ({
       );
     }
 
-    const selectedPrefix = prefixesArray[0];
+    const selectedPrefix = customPrefix || prefixesArray[0];
     const vehicle = settings.vehicles?.find(
       (v) => normalizePrefix(v.prefix) === selectedPrefix,
     );
@@ -1626,8 +1942,15 @@ export const Reports: React.FC<ReportsProps> = ({
       return colors[(d - 1) % 3];
     };
 
+    const targetLogs = logs.filter((log) => {
+      const matchPrefix = normalizePrefix(log.prefix) === normalizePrefix(selectedPrefix);
+      const logMonth = parseLogDateToMonth(log.date);
+      const matchMonth = !monthFilter || logMonth === monthFilter;
+      return matchPrefix && matchMonth;
+    });
+
     const logsByDay: Record<number, LogEntry> = {};
-    filteredLogs.forEach((log) => {
+    targetLogs.forEach((log) => {
       if (parseLogDateToMonth(log.date) === monthFilter) {
         let dd = 0;
         const dateStr = String(log.date);
@@ -1665,7 +1988,7 @@ export const Reports: React.FC<ReportsProps> = ({
 
     if (reportItems.length === 0) {
       const allLabels = new Set<string>();
-      filteredLogs.forEach((log) => {
+      targetLogs.forEach((log) => {
         try {
           if (log.itemsDetail) {
             const details = JSON.parse(log.itemsDetail);
@@ -1855,10 +2178,10 @@ export const Reports: React.FC<ReportsProps> = ({
                   const dayStr = `${year}-${month.toString().padStart(2, "0")}-${d.toString().padStart(2, "0")}`;
                   const justification = justifications.find(
                     (j) =>
-                      j.month === monthFilter &&
+                      normalizeMonthString(j.month) === normalizeMonthString(monthFilter) &&
                       normalizePrefix(j.vehicleType) ===
                         normalizePrefix(selectedPrefix) &&
-                      String(j.date).startsWith(dayStr),
+                      isDateMatch(j.date || (j as any).dateRef, year, month, d),
                   );
                   if (justification) {
                     return (
@@ -1903,10 +2226,10 @@ export const Reports: React.FC<ReportsProps> = ({
                   const dayStr = `${year}-${month.toString().padStart(2, "0")}-${d.toString().padStart(2, "0")}`;
                   const justification = justifications.find(
                     (j) =>
-                      j.month === monthFilter &&
+                      normalizeMonthString(j.month) === normalizeMonthString(monthFilter) &&
                       normalizePrefix(j.vehicleType) ===
                         normalizePrefix(selectedPrefix) &&
-                      String(j.date).startsWith(dayStr),
+                      isDateMatch(j.date || (j as any).dateRef, year, month, d),
                   );
                   if (justification) {
                     return (
@@ -2080,6 +2403,173 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   };
 
+  const renderRetroactiveLogsReport = () => {
+    const prefixesArray = Array.from(selectedPrefixes);
+    if (prefixesArray.length !== 1 || !monthFilter) {
+      return (
+        <div className="p-20 text-center flex flex-col items-center gap-4 text-gray-400">
+          <Calendar className="w-16 h-16 text-blue-500 mb-2 opacity-20" />
+          <h3 className="text-sm font-black uppercase tracking-widest">Selecione uma viatura e mês para gerar o relatório retroativo.</h3>
+        </div>
+      );
+    }
+
+    const selectedPrefix = prefixesArray[0];
+    const [year, monthNum] = monthFilter.split("-").map(Number);
+    const daysInMonth = new Date(year, monthNum, 0).getDate();
+
+    const logsByDay: Record<number, LogEntry> = {};
+    filteredLogs.forEach((log) => {
+      if (parseLogDateToMonth(log.date) === monthFilter) {
+        let dd = 0;
+        const dateStr = String(log.date);
+        if (dateStr.includes("-")) {
+          const parts = dateStr.split("T")[0].split("-");
+          if (parts.length === 3) dd = parseInt(parts[2]);
+        } else if (dateStr.includes("/")) {
+          const parts = dateStr.split("/");
+          if (parts.length >= 1) dd = parseInt(parts[0]);
+        }
+        if (dd > 0) {
+          if (!logsByDay[dd] || new Date(log.date).getTime() > new Date(logsByDay[dd].date).getTime()) {
+            logsByDay[dd] = log;
+          }
+        }
+      }
+    });
+
+    const reportJustifications = justifications.filter(j => {
+      const jDate = (j.date || (j as any).dateRef || "").toString();
+      const jMonth = j.month || (jDate ? parseLogDateToMonth(jDate) : "");
+      const matchesMonth = normalizeMonthString(jMonth) === normalizeMonthString(monthFilter);
+      const matchesPrefix = normalizePrefix(j.vehicleType) === normalizePrefix(selectedPrefix);
+      return matchesMonth && matchesPrefix;
+    });
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-stretch border-2 border-black overflow-hidden bg-white mb-6">
+          <div className="w-24 border-r-2 border-black p-2 flex items-center justify-center bg-white">
+            {settings.headerLogoUrl1 && <img src={settings.headerLogoUrl1} className="h-14 object-contain" alt="Logo 1" />}
+          </div>
+          <div className="flex-1 bg-blue-900 text-white text-center flex flex-col items-center justify-center py-3">
+            <h1 className="text-base font-black uppercase leading-tight tracking-widest">
+              Relatório de Conferências Realizadas em Data Retroativa
+            </h1>
+            <p className="text-[9px] font-bold mt-1 opacity-80 uppercase">Auditoria de Lançamentos fora do Prazo Regulamentar</p>
+          </div>
+          <div className="w-24 border-l-2 border-black p-2 flex items-center justify-center bg-white">
+            {settings.headerLogoUrl2 && <img src={settings.headerLogoUrl2} className="h-14 object-contain" alt="Logo 2" />}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 border-2 border-black text-[9px] font-black uppercase divide-x-2 divide-black bg-white mb-6">
+          <div className="px-3 py-2 bg-gray-50">Viatura: <span className="text-blue-700 ml-1">{selectedPrefix}</span></div>
+          <div className="px-3 py-2 bg-gray-50">Mês de Referência: <span className="text-blue-700 ml-1">{getMonthLabel(monthFilter).toUpperCase()}</span></div>
+          <div className="px-3 py-2 bg-gray-50">Emitido em: <span className="text-blue-700 ml-1">{new Date().toLocaleString("pt-BR")}</span></div>
+        </div>
+
+        <div className="border-2 border-black shadow-lg overflow-hidden rounded-sm">
+          <table className="w-full text-[9px] border-collapse bg-white">
+            <thead>
+              <tr className="bg-gray-100 border-b-2 border-black text-center font-black uppercase">
+                <th className="w-16 border-r-2 border-black p-2">Dia Ref.</th>
+                <th className="w-24 border-r border-black p-2">Status</th>
+                <th className="w-48 border-r border-black p-2">Data/Hora Realização</th>
+                <th className="p-2 text-left">Motivo / Justificativa do Atraso</th>
+                <th className="w-64 border-l-2 border-black p-2 text-left">Responsável pela Validação</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-black/20">
+              {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
+                const log = logsByDay[day];
+                const justification = reportJustifications.find((j) => {
+                  const jDate = j.date || (j as any).dateRef;
+                  return isDateMatch(jDate, year, monthNum, day);
+                });
+
+                if (!log || !justification) return null;
+
+                return (
+                  <tr key={day} className="h-14 hover:bg-blue-50/30 transition-colors">
+                    <td className="border-r-2 border-black p-2 text-center font-black text-[13px] bg-gray-50/50">
+                      {day.toString().padStart(2, "0")}
+                    </td>
+                    <td className="border-r border-black p-2 text-center">
+                      <span className="text-green-700 font-extrabold text-[10px] uppercase">OK</span>
+                    </td>
+                    <td className="border-r border-black p-2 text-center font-black">
+                      <div className="text-gray-900 border-b border-gray-100 pb-0.5">{new Date(log.date).toLocaleDateString("pt-BR")}</div>
+                      <div className="text-blue-700 text-[10px] mt-0.5">{new Date(log.date).toLocaleTimeString("pt-BR", { hour: '2-digit', minute: '2-digit' })}h</div>
+                    </td>
+                    <td className="border-r border-black p-3 font-bold text-[10px] leading-relaxed text-gray-800 bg-yellow-50/10">
+                      "{justification.justification}"
+                    </td>
+                    <td className="p-2 px-4 border-l-2 border-black">
+                      <div className="flex flex-col">
+                        <span className="font-black text-[10px] uppercase text-gray-900 border-b border-gray-100 pb-0.5">
+                          {justification.author || log.inspector}
+                        </span>
+                        <div className="flex items-center justify-between mt-1.5">
+                          <span className="text-[7.5px] text-green-700 font-extrabold flex items-center gap-1 uppercase">
+                            <CheckCircle className="w-3 h-3" /> Digitalmente Validado
+                          </span>
+                          <span className="text-[7px] text-gray-400 font-mono">HASH: {justification.id?.substring(0, 8).toUpperCase()}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[6.5px] text-gray-400 font-bold italic mt-1">
+                          <Clock className="w-2.5 h-2.5" />
+                          <span>REGISTRADO EM: {justification.createdAt ? new Date(justification.createdAt).toLocaleString('pt-BR') : 'DATA INDISPONÍVEL'}</span>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }).filter(Boolean)}
+
+              {Array.from({ length: daysInMonth }, (_, i) => i + 1).every(d => {
+                const log = logsByDay[d];
+                const justification = reportJustifications.find((j) => isDateMatch(j.date || (j as any).dateRef, year, monthNum, d));
+                return !(log && justification);
+              }) && (
+                <tr>
+                  <td colSpan={4} className="p-20 text-center text-gray-400 font-black uppercase text-[11px] bg-white italic tracking-widest leading-loose">
+                    Nenhum registro retroativo identificado para este período e viatura.<br/>
+                    <span className="text-[9px] opacity-60">Todos os checklists foram realizados dentro do prazo ou não possuem justificativa associada.</span>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-12 pt-8 border-t-2 border-black grid grid-cols-2 gap-12">
+            <div className="flex flex-col items-center">
+                <div className="w-full border-b-2 border-black h-16 flex items-end justify-center pb-2">
+                    <span className="text-[10px] font-black text-blue-800 uppercase tracking-wider">{getSignature("CH_MOTORISTAS_AMARELA", "retroactive_logs")?.user || getSignature("CH_MOTORISTAS_AZUL", "retroactive_logs")?.user || getSignature("CH_MOTORISTAS_VERDE", "retroactive_logs")?.user}</span>
+                </div>
+                <span className="text-[9px] font-black uppercase mt-2 text-gray-600">Chefe dos Motoristas (Auditoria de Atrasos)</span>
+            </div>
+            <div className="flex flex-col items-center">
+                <div className="w-full border-b-2 border-black h-16 flex items-end justify-center pb-2">
+                    <span className="text-[10px] font-black text-blue-800 uppercase tracking-wider">{getSignature("CMT_POSTO", "retroactive_logs")?.user}</span>
+                </div>
+                <span className="text-[9px] font-black uppercase mt-2 text-gray-600">Comandante do Posto (Visto Superior)</span>
+            </div>
+        </div>
+
+        <div className="mt-20 pt-6 flex justify-between items-end text-[8px] font-black text-gray-300 uppercase tracking-widest border-t-2 border-gray-50">
+          <div className="flex flex-col gap-1">
+            <span>DT-LOG | SISTEMA DE GESTÃO DE FROTA OPERACIONAL</span>
+            <span>DATA DE EMISSÃO: {new Date().toLocaleString("pt-BR")}</span>
+          </div>
+          <div className="text-right">
+            <span>PÁGINA 1 DE 1 | CÓDIGO CRC: {Math.random().toString(36).substring(2, 12).toUpperCase()}</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderJustificationSheet = (
     type: string,
     vehiclePrefix: string,
@@ -2129,286 +2619,313 @@ export const Reports: React.FC<ReportsProps> = ({
         // Month match - Be very permissive
         const jDate = (j.date || (j as any).dateRef || "").toString();
         const jMonth = j.month || (jDate ? parseLogDateToMonth(jDate) : "");
-        const matchesMonth = !month || jMonth === month;
+        const matchesMonth = !month || normalizeMonthString(jMonth) === normalizeMonthString(month);
         
         // Prefix/Vehicle match - Normalize both sides
         const targetNormalized = normalizePrefix(vehiclePrefix);
         const matchesPrefix = 
           normalizePrefix(j.vehicleType) === targetNormalized ||
-          normalizePrefix(j.station) === targetNormalized;
+          normalizePrefix(j.station) === targetNormalized ||
+          !j.vehicleType; // Also allow justifications without vehicleType if it happened
         
-        // Type match (Fuzzy)
-        const typeMap: Record<string, string[]> = {
-          "daily_control": ["DIÁRIO", "DIARIO", "daily_control", "DAILY"],
-          "daily_control_motos": ["DIÁRIO MOTOS", "DIARIO MOTOS", "daily_control_motos", "daily_motos", "DIÁRIO", "DIARIO"],
-          "weekly_leves": ["SEMANAL", "weekly_leves", "WEEKLY"],
-          "weekly_motos": ["SEMANAL", "weekly_motos", "WEEKLY"],
-          "weekly_ab": ["SEMANAL", "weekly_ab", "WEEKLY"],
-        };
-        
-        const validTypes = ["GERAL", "Geral", "ANY", "", undefined, null];
-        if (activeReport && typeMap[activeReport]) validTypes.push(...typeMap[activeReport]);
-        if (type) validTypes.push(type);
-
-        const jTypeUpper = String(j.type || "").toUpperCase().trim();
-        const matchesType = jTypeUpper === "" || jTypeUpper === "GERAL" || validTypes.some(vt => 
-          String(vt || "").toUpperCase().trim() === jTypeUpper
-        );
-
-        return matchesMonth && (matchesPrefix || !targetNormalized) && matchesType;
+        return matchesMonth && matchesPrefix;
       }
     );
 
     return (
       <div
-        className="mt-8 border border-black p-4 bg-white break-before-page"
-        style={{ pageBreakBefore: "always" }}
+        className="mt-8 border border-black p-4 bg-white break-before-page relative"
+        style={{ pageBreakBefore: "always", minHeight: "290mm" }}
       >
-        <div className="text-center border-b border-black pb-2 mb-4">
-          <h2 className="text-sm font-black uppercase">
-            FOLHA DE JUSTIFICATIVAS - {type}
-          </h2>
-          <p className="text-[10px] font-bold uppercase">
-            MÊS DE REFERÊNCIA: {getMonthLabel(month).toUpperCase()} | VTR:{" "}
-            {vehiclePrefix}
-          </p>
+        {/* Branding Marca D'água ou Logo de Fundo Opcional */}
+        <div className="absolute inset-0 flex items-center justify-center opacity-[0.03] pointer-events-none">
+          <Shield className="w-96 h-96" />
         </div>
 
-        <div className="space-y-4">
-          <div className="border border-black">
-            <div className="bg-gray-100 border-b border-black p-1 text-[9px] font-black uppercase text-center">
-              Dias sem preenchimento / Registro Retroativo
+        <div className="text-center border-b-2 border-black pb-3 mb-6 relative z-10">
+          <h2 className="text-sm font-black uppercase tracking-tight">
+            DEPARTAMENTO DE TRANSPORTES E LOGÍSTICA
+          </h2>
+          <h1 className="text-lg font-black uppercase mt-1">
+            FOLHA DE JUSTIFICATIVAS E REGISTROS - {type}
+          </h1>
+          <button
+            onClick={() => fetchJustifications()}
+            className="absolute right-0 top-0 bg-blue-50 hover:bg-blue-100 text-blue-600 p-2 rounded-full transition-all no-print print:hidden"
+            title="Sincronizar com Banco de Dados"
+          >
+            <RefreshCw className={`w-4 h-4 ${isFetchingJustifications ? 'animate-spin' : ''}`} />
+          </button>
+          <div className="flex justify-center gap-6 mt-2 text-[11px] font-black uppercase text-gray-700">
+            <span className="bg-gray-100 px-3 py-1 rounded-sm border border-gray-300">
+              MÊS: {getMonthLabel(month).toUpperCase()}
+            </span>
+            <span className="bg-gray-100 px-3 py-1 rounded-sm border border-gray-300">
+              PREFIXO: {vehiclePrefix}
+            </span>
+            <span className="bg-gray-100 px-3 py-1 rounded-sm border border-gray-300">
+              CÓD: {Math.random().toString(36).substring(7).toUpperCase()}
+            </span>
+          </div>
+        </div>
+
+        <div className="space-y-8 relative z-10">
+          {/* Seção 1: Justificativas de Ausência */}
+          <div className="border border-black shadow-sm">
+            <div className="bg-gray-900 border-b border-black p-1.5 text-[10px] font-black uppercase text-white tracking-widest flex items-center justify-center gap-2">
+              <AlertCircle className="w-4 h-4" />
+              01. JUSTIFICATIVAS DE AUSÊNCIA DE CONFERÊNCIA (CHECKLIST NÃO REALIZADO)
             </div>
-            <table className="w-full text-[8px] border-collapse">
+            <table className="w-full text-[8.5px] border-collapse">
               <thead>
                 <tr className="bg-gray-50 border-b border-black">
-                  <th className="w-16 border-r border-black p-1 font-black">DIA</th>
-                  <th className="w-24 border-r border-black p-1 font-black text-center">STATUS</th>
-                  <th className="flex-1 p-1 text-left font-black">JUSTIFICATIVA / MOTIVO</th>
-                  <th className="w-48 border-l border-black p-1 text-left font-black">
-                    RESPONSÁVEL (CHEFE MOTORISTAS)
-                  </th>
+                  <th className="w-14 border-r border-black p-1.5 font-extrabold uppercase">Dia</th>
+                  <th className="w-32 border-r border-black p-1.5 font-extrabold uppercase text-center">Status</th>
+                  <th className="flex-1 p-1.5 text-left font-extrabold uppercase">Observação / Justificativa do Responsável</th>
+                  <th className="w-60 border-l border-black p-1.5 text-left font-extrabold uppercase">Assinado por:</th>
                 </tr>
               </thead>
               <tbody>
                 {Array.from({ length: daysInMonth }, (_, i) => i + 1)
                   .map((day) => {
                     const dayStrFormatted = `${year}-${monthNum.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-                    const justification = reportJustifications.find((j) => {
-                      const jDateVal = j.date || (j as any).dateRef;
-                      if (!jDateVal) return false;
-                      const dateStr = String(jDateVal);
-                      let jYear = 0,
-                        jMonth = 0,
-                        jDay = 0;
-
-                      if (dateStr.includes("-")) {
-                        const parts = dateStr.split("T")[0].split("-");
-                        if (parts.length === 3) {
-                          jYear = parseInt(parts[0]);
-                          jMonth = parseInt(parts[1]);
-                          jDay = parseInt(parts[2]);
-                        }
-                      } else if (dateStr.includes("/")) {
-                        const parts = dateStr.split("/");
-                        if (parts.length >= 3) {
-                          jDay = parseInt(parts[0]);
-                          jMonth = parseInt(parts[1]);
-                          jYear = parseInt(parts[2].split(" ")[0]);
-                        }
-                      }
-
-                      return jYear === year && jMonth === monthNum && jDay === day;
-                    });
+                    const justification = reportJustifications.find((j) => isDateMatch(j.date || (j as any).dateRef, year, monthNum, day));
                     const hasLog = existingDays.has(day);
-                    return { day, dayStr: dayStrFormatted, justification, hasLog };
-                  })
-                  .filter((item) => !item.hasLog || !!item.justification)
-                  .map(({ day, dayStr, justification, hasLog }) => {
+                    
+                    // Só mostrar se NÃO tiver log (ausência) ou se tiver uma justificativa
+                    if (hasLog && !justification) return null;
+
                     return (
                       <tr 
                         key={day} 
-                        className={`border-b border-black h-8 transition-colors ${!hasLog && !justification ? 'bg-red-50/30 cursor-pointer hover:bg-purple-50/50' : 'hover:bg-gray-50'}`}
-                        onClick={() => {
-                          const prefix = Array.from(selectedPrefixes)[0];
-                          const existing = justifications.find(
-                            (j) =>
-                              String(j.date).startsWith(dayStr) &&
-                              normalizePrefix(j.vehicleType) === normalizePrefix(prefix)
-                          );
-
-                          setNewJustification({
-                            ...newJustification,
-                            date: dayStr,
-                            justification: existing ? existing.justification : ""
-                          });
-                          setShowJustificationModal(true);
-                        }}
+                        className={`border-b border-black h-14 transition-colors ${!hasLog ? 'bg-red-50/10' : 'bg-white'}`}
                       >
-                        <td className="border-r border-black p-1 text-center font-black">
+                        <td className="border-r border-black p-1.5 text-center font-black text-[12px] bg-gray-50/50">
                           {day.toString().padStart(2, "0")}
                         </td>
-                        <td className="border-r border-black p-1 text-center font-black">
-                          {hasLog ? (
-                            <span className="text-green-600">LANÇ. RETROATIVO</span>
+                        <td className="border-r border-black p-1.5 text-center font-black text-[8px]">
+                          {justification ? (
+                            <div className="flex flex-col items-center">
+                              <span className="text-green-700 font-black text-[10px] uppercase tracking-tighter shadow-sm">OK</span>
+                              <span className="text-[6px] text-green-600 font-bold uppercase mt-0.5">Validado</span>
+                            </div>
                           ) : (
-                            <span className={`${justification ? 'text-purple-600' : 'text-red-600'}`}>
-                              {justification ? 'JUSTIFICADO' : 'AUSENTE'}
-                            </span>
+                            <div className="flex flex-col items-center">
+                               <span className="text-red-700 underline font-black text-[9px] uppercase">Pendente</span>
+                               <span className="text-[6px] text-red-500 mt-1 uppercase">Aguardando Justificativa</span>
+                            </div>
                           )}
                         </td>
-                        <td className="border-r border-black p-1 uppercase font-medium text-[8px] leading-tight relative group">
-                          {justification?.justification ? (
-                            <div className="flex flex-col gap-0.5">
-                              {hasLog && (
-                                <span className="text-blue-700 font-black flex items-center gap-1">
-                                  <AlertCircle className="w-2.5 h-2.5" /> LANÇAMENTO RETROATIVO
-                                </span>
-                              )}
-                              <span className="text-gray-900 font-bold whitespace-pre-wrap">
-                                {justification.justification}
-                              </span>
+                        <td className="border-r border-black p-2 font-medium text-[9.5px] leading-relaxed text-gray-800">
+                          {justification ? (
+                            <div className="flex flex-col gap-1.5 animate-fadeIn">
+                              <textarea
+                                rows={2}
+                                readOnly
+                                disabled
+                                className="w-full bg-purple-50/20 border border-purple-100 rounded p-1.5 text-[9px] font-semibold text-purple-900 cursor-not-allowed resize-none"
+                                value={justification.justification || "JUSTIFICATIVA REGISTRADA"}
+                              />
+                              {hasLog && <span className="text-[7px] text-blue-600 font-black uppercase">Registro Retroativo Identificado</span>}
                             </div>
-                          ) : !hasLog ? (
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-red-500 font-bold">CHECKLIST NÃO REALIZADO</span>
-                              <button className="no-print bg-purple-600 text-white px-2 py-0.5 rounded text-[7px] font-black uppercase transition-all shadow-sm">
-                                + JUSTIFICAR
+                          ) : (
+                            <div className="flex items-center gap-2">
+                               <textarea
+                                 rows={2}
+                                 className="flex-1 bg-yellow-50/30 border border-gray-200 rounded p-1.5 text-[9px] font-bold focus:border-purple-500 outline-none transition-all resize-none shadow-inner"
+                                 placeholder="Digite a justificativa aqui..."
+                                 value={justificationDrafts[day] || ""}
+                                 onChange={(e) => setJustificationDrafts(prev => ({ ...prev, [day]: e.target.value }))}
+                               />
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-2 border-l border-black bg-gray-50/10 text-left align-middle w-60">
+                          {justification ? (
+                            <div className="flex flex-col justify-center animate-fadeIn">
+                              <div className="flex items-center gap-1.5 mb-1 text-purple-900">
+                                <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                                <span className="font-black text-[9.5px] uppercase border-b border-gray-300 flex-1">
+                                  {justification.author}
+                                </span>
+                              </div>
+                              <div className="flex flex-col gap-0.5 mt-0.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[7.5px] text-gray-500 font-black">RE: {justification.authorRank}</span>
+                                  <span className="text-[6.5px] text-purple-400 font-mono font-bold tracking-tighter bg-purple-50 px-1 border border-purple-100 rounded">VAL: {justification.id?.substring(0, 6).toUpperCase()}</span>
+                                </div>
+                                <div className="flex items-center gap-1 text-[6.5px] text-gray-400 font-bold italic">
+                                  <Clock className="w-2 h-2 shrink-0" />
+                                  <span>REGISTRADO EM: {justification.createdAt ? new Date(justification.createdAt).toLocaleString('pt-BR') : 'DATA INDISPONÍVEL'}</span>
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-center">
+                              <button
+                                onClick={() => {
+                                  const text = justificationDrafts[day];
+                                  if (!text || text.trim().length < 5) {
+                                    alert("Por favor, digite uma justificativa válida antes de assinar.");
+                                    return;
+                                  }
+                                  setPendingJustification({
+                                    day,
+                                    date: dayStrFormatted,
+                                    text: text
+                                  });
+                                  setJustificationAuth({ username: "", password: "" });
+                                  setShowJustificationAuthModal(true);
+                                }}
+                                className="bg-purple-600 hover:bg-purple-700 text-white text-[8px] font-black px-4 py-1.5 rounded shadow-sm transition-all flex items-center gap-1 uppercase no-print"
+                              >
+                                <Lock className="w-3 h-3" />
+                                Assinar e Registrar
                               </button>
                             </div>
-                          ) : (
-                            <div className="flex flex-col gap-0.5">
-                              <span className="text-blue-700 font-black flex items-center gap-1">
-                                <AlertCircle className="w-2.5 h-2.5" /> LANÇAMENTO RETROATIVO
-                              </span>
-                              <span className="text-gray-400 italic">SEM JUSTIFICATIVA ADICIONAL</span>
-                            </div>
                           )}
-                        </td>
-                        <td className="p-1 flex flex-col justify-center min-h-[32px]">
-                          <span className="font-black text-[7.5px] uppercase">
-                            {justification?.author ||
-                              (hasLog
-                                ? logsByDay[day]?.inspector ||
-                                  logsByDay[day]?.Inspetor ||
-                                  "SISTEMA CHECKVIATURA"
-                                : "Pendente de Assinatura")}
-                          </span>
-                          <span className="text-[6.5px] text-gray-500 font-bold uppercase mt-0.5">
-                            {justification ? (
-                              `RE: ${justification.authorRank}`
-                            ) : hasLog ? (
-                              `RE: ${logsByDay[day]?.plate?.includes("RE ") ? logsByDay[day]?.plate : "REGISTRO ELETRÔNICO"}`
-                            ) : (
-                              "RESPONSÁVEL / RE"
-                            )}
-                          </span>
                         </td>
                       </tr>
                     );
-                  })}
+                  })
+                  .filter(Boolean)}
               </tbody>
             </table>
+            <div className="bg-gray-50 p-1.5 text-[7px] text-gray-500 italic font-bold border-t border-black text-center">
+              * Justificativas de ausência são lançadas manualmente pelos chefes dos motoristas quando o checklist diário não é realizado no período regulamentar.
+            </div>
           </div>
 
-          <div className="mt-6 grid grid-cols-4 gap-4">
-            <div className="space-y-1">
-              <div className="bg-gray-100 border border-black p-1 text-[8px] font-black uppercase text-center">
-                Chefe Motoristas
+          {/* Seção 3: Assinaturas de Validação de Auditoria */}
+          <div className="mt-8 pt-6 border-t-2 border-black">
+            <div className="text-center mb-6">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-gray-700">CAMPOS DE VALIDAÇÃO DIGITAL E ASSINATURA DOS RESPONSÁVEIS</h3>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-10">
+              {/* Coluna 1: Chefes de Motoristas */}
+              <div className="space-y-3">
+                <div className="bg-gray-100 border border-black p-1 text-[8px] font-extrabold text-center uppercase">Chefes dos Motoristas (Auditoria Mensal)</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: "CH_MOTORISTAS_AMARELA", label: "AMARELA" },
+                    { id: "CH_MOTORISTAS_AZUL", label: "AZUL" },
+                    { id: "CH_MOTORISTAS_VERDE", label: "VERDE" },
+                  ].map((role) => {
+                    const sig = getSignature(role.id, activeReport || type);
+                    return (
+                      <div key={role.id} className="flex flex-col items-center">
+                        <div 
+                          onClick={() => handleTriggerSignature(role.id, `CHEFE MOTORISTAS ${role.label}`)}
+                          className="w-full border border-black h-12 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 bg-white p-0.5"
+                        >
+                          {sig ? (
+                            <div className="text-center">
+                              <span className="text-[7px] font-black text-blue-700 leading-none block uppercase">{sig.user}</span>
+                              <span className="text-[5px] text-gray-400 block mt-0.5">{sig.date?.substring(0, 10)}</span>
+                            </div>
+                          ) : (
+                            <span className="text-[6.5px] text-purple-600 font-extrabold no-print border border-purple-200 px-1 rounded">ASSINAR</span>
+                          )}
+                        </div>
+                        <span className="text-[7.5px] font-black mt-1 uppercase text-gray-600">{role.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-              {[
-                { id: "CH_MOTORISTAS_AMARELA", label: "AMARELA" },
-                { id: "CH_MOTORISTAS_AZUL", label: "AZUL" },
-                { id: "CH_MOTORISTAS_VERDE", label: "VERDE" },
-              ].map((role) => {
-                const sig = getSignature(role.id, activeReport || type);
-                return (
-                  <div 
-                    key={role.id} 
-                    onClick={() => handleTriggerSignature(role.id, `CHEFE MOTORISTAS ${role.label}`)}
-                    className="flex border border-black h-5 items-center cursor-pointer hover:bg-gray-50 transition-all font-black"
-                  >
-                    <div className="w-12 border-r border-black px-1 text-[6.5px]">{role.label}</div>
-                    <div className="flex-1 px-1 text-[6.5px] text-blue-600 text-center truncate">
-                      {sig ? sig.user : <span className="text-purple-600 no-print">+ ASSINAR</span>}
-                    </div>
-                  </div>
-                );
-              })}
+
+              {/* Coluna 2: Comandantes de Prontidão */}
+              <div className="space-y-3">
+                <div className="bg-gray-100 border border-black p-1 text-[8px] font-extrabold text-center uppercase">Comandantes de Prontidão (Visto Superior)</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: "CMT_PRONTIDAO_AMARELA", label: "AMARELA" },
+                    { id: "CMT_PRONTIDAO_AZUL", label: "AZUL" },
+                    { id: "CMT_PRONTIDAO_VERDE", label: "VERDE" },
+                  ].map((role) => {
+                    const sig = getSignature(role.id, activeReport || type);
+                    return (
+                      <div key={role.id} className="flex flex-col items-center">
+                        <div 
+                          onClick={() => handleTriggerSignature(role.id, `CMT PRONTIDÃO ${role.label}`)}
+                          className="w-full border border-black h-12 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 bg-white p-0.5"
+                        >
+                          {sig ? (
+                            <div className="text-center">
+                              <span className="text-[7px] font-black text-blue-700 leading-none block uppercase">{sig.user}</span>
+                              <span className="text-[5px] text-gray-400 block mt-0.5">{sig.date?.substring(0, 10)}</span>
+                            </div>
+                          ) : (
+                            <span className="text-[6.5px] text-purple-600 font-extrabold no-print border border-purple-200 px-1 rounded">ASSINAR</span>
+                          )}
+                        </div>
+                        <span className="text-[7.5px] font-black mt-1 uppercase text-gray-600">{role.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
-            <div className="space-y-1">
-              <div className="bg-gray-100 border border-black p-1 text-[8px] font-black uppercase text-center">
-                Cmt Prontidão
-              </div>
-              {[
-                { id: "CMT_PRONTIDAO_AMARELA", label: "AMARELA" },
-                { id: "CMT_PRONTIDAO_AZUL", label: "AZUL" },
-                { id: "CMT_PRONTIDAO_VERDE", label: "VERDE" },
-              ].map((role) => {
-                const sig = getSignature(role.id, activeReport || type);
-                return (
+            {/* Linha Final de Assinaturas (Posto e SGB) */}
+            <div className="grid grid-cols-2 gap-10 mt-6 pt-4 border-t border-gray-200 border-dashed">
+               <div className="flex flex-col items-center">
                   <div 
-                    key={role.id} 
-                    onClick={() => handleTriggerSignature(role.id, `CMT PRONTIDÃO ${role.label}`)}
-                    className="flex border border-black h-5 items-center cursor-pointer hover:bg-gray-50 transition-all font-black"
+                    onClick={() => handleTriggerSignature("CMT_POSTO", "COMANDANTE DO POSTO")}
+                    className="w-full border-b border-black h-12 flex items-center justify-center cursor-pointer hover:bg-gray-50 bg-white"
                   >
-                    <div className="w-12 border-r border-black px-1 text-[6.5px]">{role.label}</div>
-                    <div className="flex-1 px-1 text-[6.5px] text-blue-600 text-center truncate">
-                      {sig ? sig.user : <span className="text-purple-600 no-print">+ ASSINAR</span>}
-                    </div>
+                    {getSignature("CMT_POSTO", activeReport || type) ? (
+                      <span className="text-[9px] font-black text-blue-800 uppercase">{getSignature("CMT_POSTO", activeReport || type)?.user}</span>
+                    ) : (
+                      <span className="text-[7px] text-gray-300 font-bold uppercase no-print">Assinatura Comandante do Posto</span>
+                    )}
                   </div>
-                );
-              })}
+                  <span className="text-[8px] font-extrabold mt-1 uppercase">COMANDANTE DO POSTO</span>
+               </div>
+               <div className="flex flex-col items-center">
+                  <div 
+                    onClick={() => handleTriggerSignature("CMT_SGB", "COMANDANTE DO SGB")}
+                    className="w-full border-b border-black h-12 flex items-center justify-center cursor-pointer hover:bg-gray-50 bg-white"
+                  >
+                    {getSignature("CMT_SGB", activeReport || type) ? (
+                      <span className="text-[9px] font-black text-blue-800 uppercase">{getSignature("CMT_SGB", activeReport || type)?.user}</span>
+                    ) : (
+                      <span className="text-[7px] text-gray-300 font-bold uppercase no-print">Assinatura Comandante do SGB</span>
+                    )}
+                  </div>
+                  <span className="text-[8px] font-extrabold mt-1 uppercase">COMANDANTE DO SGB</span>
+               </div>
             </div>
+          </div>
+        </div>
 
-            <div className="space-y-1">
-              <div className="bg-gray-100 border border-black p-1 text-[8px] font-black uppercase text-center">
-                Comandante Posto
-              </div>
-              {[{ id: "CMT_POSTO", label: "CMT POSTO" }].map((role) => {
-                const sig = getSignature(role.id, activeReport || type);
-                return (
-                  <div 
-                    key={role.id} 
-                    onClick={() => handleTriggerSignature(role.id, role.label)}
-                    className="flex border border-black h-5 items-center cursor-pointer hover:bg-gray-50 transition-all font-black"
-                  >
-                    <div className="flex-1 px-1 text-[6.5px] text-blue-600 text-center truncate italic">
-                      {sig ? sig.user : <span className="text-purple-600 no-print">+ ASSINAR</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="space-y-1">
-              <div className="bg-gray-100 border border-black p-1 text-[8px] font-black uppercase text-center">
-                Comandante SGB
-              </div>
-              {[{ id: "CMT_SGB", label: "CMT SGB" }].map((role) => {
-                const sig = getSignature(role.id, activeReport || type);
-                return (
-                  <div 
-                    key={role.id} 
-                    onClick={() => handleTriggerSignature(role.id, role.label)}
-                    className="flex border border-black h-5 items-center cursor-pointer hover:bg-gray-50 transition-all font-black"
-                  >
-                    <div className="flex-1 px-1 text-[6.5px] text-blue-600 text-center truncate italic">
-                      {sig ? sig.user : <span className="text-purple-600 no-print">+ ASSINAR</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+        <div className="mt-auto pt-10 flex justify-between items-end text-[7px] font-black text-gray-300 uppercase tracking-tighter">
+          <div className="flex flex-col tracking-widest">
+            <span>DT-LOG | SISTEMA INTEGRADO DE GESTÃO FLOTA</span>
+            <span>DATA DE EMISSÃO: {new Date().toLocaleString("pt-BR")}</span>
+          </div>
+          <div className="text-right">
+            <span>CÓDIGO DE VERIFICAÇÃO CRC: {Math.random().toString(36).substring(2, 10).toUpperCase()}</span>
+            <br />
+            <span>VERSÃO 4.2.1-PRO | PÁGINA 1 DE 1</span>
           </div>
         </div>
       </div>
     );
   };
 
-  const renderNoveltiesReport = () => {
-    const novelties = filteredLogs.filter(
+  const renderNoveltiesReport = (customPrefix?: string) => {
+    const sourceLogs = customPrefix
+      ? logs.filter((log) => {
+          const matchPrefix = normalizePrefix(log.prefix) === normalizePrefix(customPrefix);
+          const logMonth = parseLogDateToMonth(log.date);
+          const matchMonth = !monthFilter || logMonth === monthFilter;
+          return matchPrefix && matchMonth;
+        })
+      : filteredLogs;
+
+    const novelties = sourceLogs.filter(
       (log) =>
         String(log.itemsStatus || "").includes("CN") ||
         (log.generalObservation &&
@@ -2434,9 +2951,9 @@ export const Reports: React.FC<ReportsProps> = ({
             </h3>
             <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
               Filtro:{" "}
-              {selectedPrefixes.size > 0
+              {customPrefix || (selectedPrefixes.size > 0
                 ? Array.from(selectedPrefixes).join(", ")
-                : "Todas as Viaturas"}{" "}
+                : "Todas as Viaturas")}{" "}
               | {monthFilter}
             </p>
           </div>
@@ -2604,15 +3121,24 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   };
 
-  const renderSyntheticReport = () => {
+  const renderSyntheticReport = (customPrefix?: string) => {
+    const sourceLogs = customPrefix
+      ? logs.filter((log) => {
+          const matchPrefix = normalizePrefix(log.prefix) === normalizePrefix(customPrefix);
+          const logMonth = parseLogDateToMonth(log.date);
+          const matchMonth = !monthFilter || logMonth === monthFilter;
+          return matchPrefix && matchMonth;
+        })
+      : filteredLogs;
+
     const stats = {
-      total: filteredLogs.length,
-      diario: filteredLogs.filter((l) => l.checklistType === "Diário").length,
-      semanal: filteredLogs.filter((l) => l.checklistType === "Semanal").length,
-      withIssues: filteredLogs.filter((l) =>
+      total: sourceLogs.length,
+      diario: sourceLogs.filter((l) => l.checklistType === "Diário").length,
+      semanal: sourceLogs.filter((l) => l.checklistType === "Semanal").length,
+      withIssues: sourceLogs.filter((l) =>
         String(l.itemsStatus || "").includes("CN"),
       ).length,
-      ok: filteredLogs.filter(
+      ok: sourceLogs.filter(
         (l) => !String(l.itemsStatus || "").includes("CN"),
       ).length,
     };
@@ -2621,7 +3147,7 @@ export const Reports: React.FC<ReportsProps> = ({
     const inspectorsMap: Record<string, number> = {};
     const canonicalPrefixes: Record<string, string> = {};
 
-    filteredLogs.forEach((l) => {
+    sourceLogs.forEach((l) => {
       const norm = normalizePrefix(l.prefix);
       if (!canonicalPrefixes[norm]) canonicalPrefixes[norm] = l.prefix;
 
@@ -2639,9 +3165,11 @@ export const Reports: React.FC<ReportsProps> = ({
             </h3>
             <p className="text-xs font-bold text-gray-500 uppercase">
               Período: {monthFilter} |{" "}
-              {selectedPrefixes.size > 0
-                ? `${selectedPrefixes.size} Viaturas Selecionadas`
-                : "Geral"}
+              {customPrefix
+                ? `Viatura: ${customPrefix}`
+                : selectedPrefixes.size > 0
+                  ? `${selectedPrefixes.size} Viaturas Selecionadas`
+                  : "Geral"}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -2730,7 +3258,16 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   };
 
-  const renderAnalyticalReport = () => {
+  const renderAnalyticalReport = (customPrefix?: string) => {
+    const listToRender = customPrefix
+      ? logs.filter((log) => {
+          const matchPrefix = normalizePrefix(log.prefix) === normalizePrefix(customPrefix);
+          const logMonth = parseLogDateToMonth(log.date);
+          const matchMonth = !monthFilter || logMonth === monthFilter;
+          return matchPrefix && matchMonth;
+        })
+      : filteredLogs;
+
     return (
       <div className="space-y-6">
         <div className="flex justify-between items-center border-b pb-4 print:pb-2">
@@ -2740,9 +3277,11 @@ export const Reports: React.FC<ReportsProps> = ({
             </h3>
             <p className="text-xs font-bold text-gray-500 uppercase">
               Filtro:{" "}
-              {selectedPrefixes.size > 0
-                ? `${selectedPrefixes.size} Viaturas Selecionadas`
-                : "Geral"}{" "}
+              {customPrefix
+                ? `Viatura: ${customPrefix}`
+                : selectedPrefixes.size > 0
+                  ? `${selectedPrefixes.size} Viaturas Selecionadas`
+                  : "Geral"}{" "}
               | {monthFilter}
             </p>
           </div>
@@ -2767,7 +3306,7 @@ export const Reports: React.FC<ReportsProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y bg-white">
-              {filteredLogs.map((log) => (
+              {listToRender.map((log) => (
                 <tr key={log.id} className="hover:bg-gray-50">
                   <td className="p-2 whitespace-nowrap">
                     {new Date(log.date).toLocaleString("pt-BR")}
@@ -3545,6 +4084,249 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   }
 
+  const renderFinalMonthlyBook = () => {
+    const prefixesArray = Array.from(selectedPrefixes);
+
+    if (prefixesArray.length === 0) {
+      return (
+        <div className="p-10 text-center flex flex-col items-center gap-4 text-gray-400 font-bold uppercase bg-white border border-dashed rounded-[2.5rem]">
+          <AlertCircle className="w-12 h-12 text-blue-500 mb-2" />
+          <h4 className="text-sm font-black uppercase text-gray-700">Nenhuma Viatura Selecionada</h4>
+          <p className="text-xs text-gray-400 font-bold max-w-sm leading-relaxed">
+            Selecione uma ou mais viaturas na lista à esquerda antes de gerar o Livro Mensal Final.
+          </p>
+        </div>
+      );
+    }
+
+    if (!monthFilter) {
+      return (
+        <div className="p-10 text-center flex flex-col items-center gap-4 text-gray-400 font-bold uppercase bg-white border border-dashed rounded-[2.5rem]">
+          <Calendar className="w-12 h-12 text-blue-500 mb-2" />
+          <h4 className="text-sm font-black uppercase text-gray-700">Selecione o Mês de Referência</h4>
+          <p className="text-xs text-gray-400 font-bold max-w-sm leading-relaxed">
+            Selecione o mês de referência nos filtros superiores para calcular os dados correspondentes.
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-8 font-sans">
+        {/* Painel de Configurações do Livro - NO PRINT */}
+        <div className="bg-gray-50 p-6 rounded-[2rem] border-2 border-gray-100 space-y-4 no-print shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-600 p-2 rounded-xl text-white">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-sm font-black uppercase text-gray-800">
+                Sumário do Livro Mensal Final
+              </h4>
+              <p className="text-[10px] text-gray-400 uppercase font-bold tracking-wider mt-0.5 animate-pulse">
+                Clique nos cards abaixo para incluir/remover relatórios da sequência
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+            <div 
+              onClick={() => setBookConfig({ ...bookConfig, includeDaily: !bookConfig.includeDaily })}
+              className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                bookConfig.includeDaily 
+                  ? "bg-blue-50/50 border-blue-500 text-blue-900" 
+                  : "bg-white border-gray-100 text-gray-400 hover:border-gray-200"
+              }`}
+            >
+              <span className="text-[9px] font-black uppercase tracking-wider block">1. Ficha Diária</span>
+              <span className="text-[13px] font-black uppercase mt-2">{bookConfig.includeDaily ? "Ativo" : "Inativo"}</span>
+            </div>
+
+            <div 
+              onClick={() => setBookConfig({ ...bookConfig, includeJustifications: !bookConfig.includeJustifications })}
+              className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                bookConfig.includeJustifications 
+                  ? "bg-blue-50/50 border-blue-500 text-blue-900" 
+                  : "bg-white border-gray-100 text-gray-400 hover:border-gray-200"
+              }`}
+            >
+              <span className="text-[9px] font-black uppercase tracking-wider block">2. Justificativas</span>
+              <span className="text-[13px] font-black uppercase mt-2">{bookConfig.includeJustifications ? "Ativo" : "Inativo"}</span>
+            </div>
+
+            <div 
+              onClick={() => setBookConfig({ ...bookConfig, includeWeekly: !bookConfig.includeWeekly })}
+              className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                bookConfig.includeWeekly 
+                  ? "bg-blue-50/50 border-blue-500 text-blue-900" 
+                  : "bg-white border-gray-100 text-gray-400 hover:border-gray-200"
+              }`}
+            >
+              <span className="text-[9px] font-black uppercase tracking-wider block">3. Ficha Semanal</span>
+              <span className="text-[13px] font-black uppercase mt-2">{bookConfig.includeWeekly ? "Ativo" : "Inativo"}</span>
+            </div>
+
+            <div 
+              onClick={() => setBookConfig({ ...bookConfig, includeNovelties: !bookConfig.includeNovelties })}
+              className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                bookConfig.includeNovelties 
+                  ? "bg-blue-50/50 border-blue-500 text-blue-900" 
+                  : "bg-white border-gray-100 text-gray-400 hover:border-gray-200"
+              }`}
+            >
+              <span className="text-[9px] font-black uppercase tracking-wider block">4. Novidades</span>
+              <span className="text-[13px] font-black uppercase mt-2">{bookConfig.includeNovelties ? "Ativo" : "Inativo"}</span>
+            </div>
+
+            <div 
+              onClick={() => setBookConfig({ ...bookConfig, includeSynthetic: !bookConfig.includeSynthetic })}
+              className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                bookConfig.includeSynthetic 
+                  ? "bg-blue-50/50 border-blue-500 text-blue-900" 
+                  : "bg-white border-gray-100 text-gray-400 hover:border-gray-200"
+              }`}
+            >
+              <span className="text-[9px] font-black uppercase tracking-wider block">5. Sintético</span>
+              <span className="text-[13px] font-black uppercase mt-2">{bookConfig.includeSynthetic ? "Ativo" : "Inativo"}</span>
+            </div>
+
+            <div 
+              onClick={() => setBookConfig({ ...bookConfig, includeAnalytical: !bookConfig.includeAnalytical })}
+              className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                bookConfig.includeAnalytical 
+                  ? "bg-blue-50/50 border-blue-500 text-blue-900" 
+                  : "bg-white border-gray-100 text-gray-400 hover:border-gray-200"
+              }`}
+            >
+              <span className="text-[9px] font-black uppercase tracking-wider block">6. Analítico</span>
+              <span className="text-[13px] font-black uppercase mt-2">{bookConfig.includeAnalytical ? "Ativo" : "Inativo"}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 pt-2 border-t border-gray-100 no-print">
+            <span className="text-[9px] font-black uppercase text-gray-400">Total de Viaturas Geradas:</span>
+            <span className="bg-blue-100 text-blue-800 text-[9px] font-black px-2 py-0.5 rounded-full uppercase">
+              {prefixesArray.length} Selecionadas
+            </span>
+          </div>
+        </div>
+
+        {/* Livro Sequencial de Páginas */}
+        <div className="space-y-12 print:space-y-0 print:gap-0">
+          {prefixesArray.map((prefix, idx) => {
+            const vehicle = settings.vehicles?.find(
+              (v) => normalizePrefix(v.prefix) === prefix
+            );
+            const isMoto = vehicle?.type === "MOTOCICLETA";
+            const isAb = vehicle?.type === "AB/AÉREA";
+
+            return (
+              <div key={prefix} className="space-y-8 print:space-y-0">
+                {/* Visual Section Indicator (No-Print) */}
+                <div className="no-print bg-gradient-to-r from-blue-900 to-blue-700 p-6 rounded-3xl text-white shadow-md flex items-center justify-between">
+                  <div>
+                    <span className="text-[9px] font-black uppercase tracking-widest text-blue-200">
+                      Viatura {idx + 1} de {prefixesArray.length}
+                    </span>
+                    <h3 className="text-xl font-black uppercase tracking-tight mt-1">
+                      {prefix}
+                    </h3>
+                    <p className="text-xs text-blue-100 uppercase font-semibold mt-1">
+                      {vehicle?.station ? `Posto d/ Serviço: ${vehicle.station}` : "Sem Posto Definido"} | Tipo: {vehicle?.type || "LEVE/PESADA"}
+                    </p>
+                  </div>
+                  <div className="bg-white/10 px-4 py-2 rounded-2xl text-center">
+                    <span className="text-[9px] font-extrabold uppercase block text-blue-200">Mês de Ref.</span>
+                    <span className="text-xs font-black uppercase">{getMonthLabel(monthFilter)}</span>
+                  </div>
+                </div>
+
+                {/* Daily Control Page (Ficha Diária) */}
+                {bookConfig.includeDaily && (
+                  <div className="bg-white print:p-0 relative print:break-inside-avoid shadow-sm print:shadow-none border rounded-[2rem] p-6 print:border-none print:rounded-none">
+                    <div className="no-print mb-4 border-b pb-2 flex justify-between items-center bg-gray-50/50 p-3 rounded-xl">
+                      <span className="text-[10px] font-black uppercase text-gray-500">Relatório Ficha de Controle Diário</span>
+                      <span className="text-[8px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Inserido</span>
+                    </div>
+                    {isMoto ? renderDailyControlMotosReport(prefix) : renderDailyControlReport(prefix)}
+                    <div className="print:page-break-after-always print:break-after-page mt-8 no-print border-b-2 border-dashed border-gray-200" style={{ pageBreakAfter: "always" }} />
+                  </div>
+                )}
+
+                {/* Justificativas Page */}
+                {bookConfig.includeJustifications && (
+                  <div className="bg-white print:p-0 relative print:break-inside-avoid shadow-sm print:shadow-none border rounded-[2rem] p-6 print:border-none print:rounded-none mt-8">
+                    <div className="no-print mb-4 border-b pb-2 flex justify-between items-center bg-gray-50/50 p-3 rounded-xl">
+                      <span className="text-[10px] font-black uppercase text-gray-500">Folha de Justificativas e Registros</span>
+                      <span className="text-[8px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Inserido</span>
+                    </div>
+                    {renderJustificationSheet("DIÁRIO", prefix, monthFilter)}
+                    <div className="print:page-break-after-always print:break-after-page mt-8 no-print border-b-2 border-dashed border-gray-200" style={{ pageBreakAfter: "always" }} />
+                  </div>
+                )}
+
+                {/* Weekly Control Page (Ficha Semanal) */}
+                {bookConfig.includeWeekly && (
+                  <div className="bg-white print:p-0 relative print:break-inside-avoid shadow-sm print:shadow-none border rounded-[2rem] p-6 print:border-none print:rounded-none mt-8">
+                    <div className="no-print mb-4 border-b pb-2 flex justify-between items-center bg-gray-50/50 p-3 rounded-xl">
+                      <span className="text-[10px] font-black uppercase text-gray-500">Relatório Ficha de Controle Semanal</span>
+                      <span className="text-[8px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Inserido</span>
+                    </div>
+                    {isMoto 
+                      ? renderWeeklyControlReport("MOTOCICLETA", prefix)
+                      : isAb 
+                        ? renderWeeklyControlReport("AB/AÉREA", prefix)
+                        : renderWeeklyControlReport("LEVE/PESADA", prefix)
+                    }
+                    <div className="print:page-break-after-always print:break-after-page mt-8 no-print border-b-2 border-dashed border-gray-200" style={{ pageBreakAfter: "always" }} />
+                  </div>
+                )}
+
+                {/* Novelties Page */}
+                {bookConfig.includeNovelties && (
+                  <div className="bg-white print:p-0 relative print:break-inside-avoid shadow-sm print:shadow-none border rounded-[2rem] p-6 print:border-none print:rounded-none mt-8">
+                    <div className="no-print mb-4 border-b pb-2 flex justify-between items-center bg-gray-50/50 p-3 rounded-xl">
+                      <span className="text-[10px] font-black uppercase text-gray-500">Relatório de Novidades</span>
+                      <span className="text-[8px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Inserido</span>
+                    </div>
+                    {renderNoveltiesReport(prefix)}
+                    <div className="print:page-break-after-always print:break-after-page mt-8 no-print border-b-2 border-dashed border-gray-200" style={{ pageBreakAfter: "always" }} />
+                  </div>
+                )}
+
+                {/* Synthetic Page */}
+                {bookConfig.includeSynthetic && (
+                  <div className="bg-white print:p-0 relative print:break-inside-avoid shadow-sm print:shadow-none border rounded-[2rem] p-6 print:border-none print:rounded-none mt-8">
+                    <div className="no-print mb-4 border-b pb-2 flex justify-between items-center bg-gray-50/50 p-3 rounded-xl">
+                      <span className="text-[10px] font-black uppercase text-gray-500">Relatório Sintético de Gerenciamento</span>
+                      <span className="text-[8px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Inserido</span>
+                    </div>
+                    {renderSyntheticReport(prefix)}
+                    <div className="print:page-break-after-always print:break-after-page mt-8 no-print border-b-2 border-dashed border-gray-200" style={{ pageBreakAfter: "always" }} />
+                  </div>
+                )}
+
+                {/* Analytical Page */}
+                {bookConfig.includeAnalytical && (
+                  <div className="bg-white print:p-0 relative print:break-inside-avoid shadow-sm print:shadow-none border rounded-[2rem] p-6 print:border-none print:rounded-none mt-8">
+                    <div className="no-print mb-4 border-b pb-2 flex justify-between items-center bg-gray-50/50 p-3 rounded-xl">
+                      <span className="text-[10px] font-black uppercase text-gray-400">Relatório Analítico Detalhado</span>
+                      <span className="text-[8px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Inserido</span>
+                    </div>
+                    {renderAnalyticalReport(prefix)}
+                    {idx < prefixesArray.length - 1 && (
+                      <div className="print:page-break-after-always print:break-after-page mt-8 no-print border-b-2 border-dashed border-gray-200" style={{ pageBreakAfter: "always" }} />
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   if (activeReport) {
     return (
       <div className="p-6 space-y-6 animate-in fade-in duration-300">
@@ -3618,6 +4400,94 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
+        {showJustificationAuthModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-300">
+            <div className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xl font-black uppercase text-gray-900 flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-purple-600" />
+                  Assinatura Digital
+                </h3>
+                <button
+                  onClick={() => setShowJustificationAuthModal(false)}
+                  className="text-gray-300 hover:text-gray-900 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="bg-purple-50 border border-purple-100 p-4 rounded-2xl">
+                <p className="text-[10px] text-purple-800 font-bold uppercase leading-relaxed">
+                  VALIDANDO REGISTRO PARA O DIA <span className="text-purple-600">{pendingJustification?.day.toString().padStart(2, "0")}</span>:
+                  <br />
+                  <span className="text-[9px] italic line-clamp-2 mt-1">"{pendingJustification?.text}"</span>
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-gray-400 uppercase ml-1">
+                    Usuário (Chefe dos Motoristas)
+                  </label>
+                  <div className="relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="Seu usuário"
+                      value={justificationAuth.username}
+                      onChange={(e) =>
+                        setJustificationAuth({
+                          ...justificationAuth,
+                          username: e.target.value,
+                        })
+                      }
+                      className="w-full border-2 rounded-2xl p-4 pl-12 text-sm font-bold focus:border-purple-500 outline-none transition-all"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-gray-400 uppercase ml-1">
+                    Senha Secreta
+                  </label>
+                  <div className="relative">
+                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="password"
+                      placeholder="Sua senha"
+                      value={justificationAuth.password}
+                      onChange={(e) =>
+                        setJustificationAuth({
+                          ...justificationAuth,
+                          password: e.target.value,
+                        })
+                      }
+                      className="w-full border-2 rounded-2xl p-4 pl-12 text-sm font-bold focus:border-purple-500 outline-none transition-all"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <button
+                disabled={isSigning}
+                onClick={handleConfirmJustificationAuth}
+                className="w-full bg-blue-900 text-white font-black py-4 rounded-2xl shadow-xl hover:bg-black transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-2 group"
+              >
+                {isSigning ? (
+                   <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                   <ShieldCheck className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                )}
+                {isSigning ? "VALIDANDO..." : "CONFIRMAR ASSINATURA"}
+              </button>
+
+              <p className="text-[9px] text-gray-400 text-center uppercase font-bold tracking-tighter">
+                O registro será gravado com carimbo de tempo e HASH de integridade.
+              </p>
+            </div>
+          </div>
+        )}
+
         {showJustificationModal && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4 no-print">
             <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-8 shadow-2xl space-y-6">
@@ -3671,12 +4541,14 @@ export const Reports: React.FC<ReportsProps> = ({
                       onChange={(e) => {
                         const selectedDate = e.target.value;
                         const prefix = Array.from(selectedPrefixes)[0];
+                        
+                        const [y, m, d] = selectedDate.split("-").map(Number);
                         const existing = justifications.find(
                           (j) =>
-                            String(j.date).startsWith(selectedDate) &&
-                            normalizePrefix(j.vehicleType) ===
-                              normalizePrefix(prefix),
+                            isDateMatch(j.date || (j as any).dateRef, y, m, d) &&
+                            normalizePrefix(j.vehicleType) === normalizePrefix(prefix),
                         );
+                        
                         setNewJustification({
                           ...newJustification,
                           date: selectedDate,
@@ -3893,6 +4765,16 @@ export const Reports: React.FC<ReportsProps> = ({
           className="bg-white p-8 rounded-[2.5rem] border shadow-sm print:p-0 print:border-0 print:shadow-none relative overflow-hidden"
         >
           <Watermark />
+          {activeReport === "fleet_dashboard" && (
+            <FleetDashboard 
+              logs={logs}
+              settings={settings}
+              justifications={justifications}
+              onRefresh={() => fetchJustifications()}
+              isLoading={isFetchingJustifications || isLoading}
+              onUpdateVehicles={onUpdateVehicles}
+            />
+          )}
           {activeReport === "novelties" && renderNoveltiesReport()}
           {activeReport === "synthetic" && renderSyntheticReport()}
           {activeReport === "analytical" && renderAnalyticalReport()}
@@ -3909,6 +4791,8 @@ export const Reports: React.FC<ReportsProps> = ({
             renderWeeklyControlReport("MOTOCICLETA")}
           {activeReport === "weekly_ab" &&
             renderWeeklyControlReport("AB/AÉREA")}
+          {activeReport === "retroactive_logs" && renderRetroactiveLogsReport()}
+          {activeReport === "final_monthly_book" && renderFinalMonthlyBook()}
           {/* Print Footer for Page Numbering */}
           <div className="hidden print:flex fixed bottom-0 left-0 right-0 h-8 items-center justify-between px-8 text-[8px] text-gray-400 border-t border-gray-100 bg-white">
             <span className="font-black uppercase">
@@ -4306,6 +5190,7 @@ export const Reports: React.FC<ReportsProps> = ({
               <button
                 onClick={() => {
                   setMonthFilter("");
+                  setPostoFilter("");
                   setSelectedPrefixes(new Set());
                   setPrefixSearch("");
                   onFetch("", "");
@@ -4320,7 +5205,7 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <div className="lg:col-span-3 space-y-2 relative">
+            <div className="lg:col-span-3 space-y-2 relative animate-in fade-in">
               <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
                 Mês de Referência
               </label>
@@ -4345,7 +5230,36 @@ export const Reports: React.FC<ReportsProps> = ({
               </div>
             </div>
 
-            <div className="lg:col-span-9 space-y-3">
+            <div className="lg:col-span-3 space-y-2 relative animate-in fade-in">
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
+                Filtrar por Posto
+              </label>
+              <div className="relative">
+                <select
+                  value={postoFilter}
+                  onChange={(e) => setPostoFilter(e.target.value)}
+                  className="w-full border-2 rounded-2xl p-3 pr-10 text-sm font-bold outline-none focus:border-blue-500 bg-white shadow-sm appearance-none cursor-pointer"
+                >
+                  <option value="">Todos os Postos ({uniquePrefixes.length} VTRs)</option>
+                  {uniqueStations.map((posto) => {
+                    const vCount = uniquePrefixes.filter((p) => {
+                      const v = settings.vehicles?.find((vtr) => normalizePrefix(vtr.prefix) === p);
+                      return v && normalizePrefix(v.station) === normalizePrefix(posto);
+                    }).length;
+                    return (
+                      <option key={posto} value={posto}>
+                        {posto} ({vCount} VTRs)
+                      </option>
+                    );
+                  })}
+                </select>
+                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
+                  <Filter className="w-4 h-4 text-gray-400" />
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-6 space-y-3">
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
                   Seleção de Viaturas ({selectedPrefixes.size} selecionadas)
@@ -4353,14 +5267,14 @@ export const Reports: React.FC<ReportsProps> = ({
                 <div className="flex gap-2">
                   <button
                     onClick={selectAllPrefixes}
-                    className="text-[9px] font-black uppercase text-blue-600 hover:underline"
+                    className="text-[9px] font-black uppercase text-blue-600 hover:underline animate-fade-in"
                   >
                     Selecionar Todas
                   </button>
                   <span className="text-gray-300">|</span>
                   <button
                     onClick={deselectAllPrefixes}
-                    className="text-[9px] font-black uppercase text-red-600 hover:underline"
+                    className="text-[9px] font-black uppercase text-red-600 hover:underline animate-fade-in"
                   >
                     Desmarcar Todas
                   </button>
@@ -4378,29 +5292,29 @@ export const Reports: React.FC<ReportsProps> = ({
                 />
               </div>
 
-              <div className="bg-white border-2 rounded-2xl p-4 max-h-48 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 shadow-inner">
-                {uniquePrefixes
-                  .filter(
-                    (p) =>
-                      !prefixSearch ||
-                      p.includes(normalizePrefix(prefixSearch)),
-                  )
-                  .map((prefix) => (
+              <div className="bg-white border-2 rounded-2xl p-4 max-h-48 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 shadow-inner">
+                {visiblePrefixes.map((prefix) => {
+                  const vehicle = settings.vehicles?.find(
+                    (v) => normalizePrefix(v.prefix) === prefix,
+                  );
+                  return (
                     <button
                       key={prefix}
                       onClick={() => togglePrefix(prefix)}
                       className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase transition-all border-2 text-center truncate ${
                         selectedPrefixes.has(prefix)
-                          ? "bg-blue-600 border-blue-600 text-white shadow-md"
-                          : "bg-gray-50 border-gray-100 text-gray-400 hover:border-gray-300"
+                          ? "bg-blue-600 border-blue-600 text-white shadow-md font-black"
+                          : "bg-gray-50 border-gray-100 text-gray-400 hover:border-gray-300 font-bold"
                       }`}
+                      title={vehicle?.station ? `Posto: ${vehicle.station}` : "Sem Posto"}
                     >
                       {prefix}
                     </button>
-                  ))}
-                {uniquePrefixes.length === 0 && (
+                  );
+                })}
+                {visiblePrefixes.length === 0 && (
                   <div className="col-span-full py-4 text-center text-[10px] font-bold text-gray-400 uppercase">
-                    Nenhuma viatura encontrada no banco.
+                    Nenhuma viatura encontrada com estes filtros.
                   </div>
                 )}
               </div>
@@ -4463,6 +5377,13 @@ export const Reports: React.FC<ReportsProps> = ({
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 no-print">
           {[
+            {
+              id: "fleet_dashboard",
+              title: "Dashboard de Frota",
+              desc: "Visão em tempo real do status das viaturas e pendências.",
+              icon: BarChart,
+              color: "bg-blue-900 border-2 border-blue-400",
+            },
             {
               id: "novelties",
               title: "Relatório de Novidades",
@@ -4539,6 +5460,20 @@ export const Reports: React.FC<ReportsProps> = ({
               desc: "Controle semanal para viaturas tipo AB e Aéreas.",
               icon: Calendar,
               color: "bg-red-600",
+            },
+            {
+              id: "retroactive_logs",
+              title: "Relatório de Registros Retroativos",
+              desc: "Checklists realizados fora do prazo regulamentar.",
+              icon: Clock,
+              color: "bg-blue-800",
+            },
+            {
+              id: "final_monthly_book",
+              title: "Livro Mensal Final",
+              desc: "Arquivo único/consolidado contendo relatórios sequenciais das viaturas selecionadas.",
+              icon: FileText,
+              color: "bg-gradient-to-br from-blue-900 to-indigo-950 border-2 border-yellow-400 font-black",
             },
           ].map((report) => (
             <button

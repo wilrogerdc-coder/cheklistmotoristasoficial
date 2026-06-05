@@ -55,7 +55,8 @@ import {
   LogOut,
   Database,
   Download,
-  Upload
+  Upload,
+  ExternalLink
 } from 'lucide-react';
 import { Header } from './Header';
 import { Footer } from './Footer';
@@ -253,6 +254,26 @@ export const Settings: React.FC<SettingsProps> = ({
   const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [logFilter, setLogFilter] = useState('');
+
+  // Manual Sub-tab & Documents state
+  const [manualSubTab, setManualSubTab] = useState<'instructions' | 'links'>('instructions');
+  const [editingDocLinkId, setEditingDocLinkId] = useState<string | null>(null);
+  const [docName, setDocName] = useState('');
+  const [docUrl, setDocUrl] = useState('');
+  const [docCategory, setDocCategory] = useState('GERAL');
+  const [docDescription, setDocDescription] = useState('');
+  const [docParams, setDocParams] = useState('');
+
+  // Synced localSettings updater when settings change
+  useEffect(() => {
+    if (settings) {
+      setLocalSettings(prev => ({
+        ...prev,
+        ...settings,
+        documentLinks: settings.documentLinks || prev.documentLinks || []
+      }));
+    }
+  }, [settings]);
 
   useEffect(() => {
     if (activeTab === 'admin' && adminSubTab === 'audit') {
@@ -665,6 +686,49 @@ export const Settings: React.FC<SettingsProps> = ({
     });
   };
 
+  const handleAddOrEditDocLink = () => {
+    if (!docName.trim() || !docUrl.trim()) {
+      alert("Por favor, preencha o nome e a URL do documento.");
+      return;
+    }
+
+    const links = localSettings.documentLinks || [];
+    if (editingDocLinkId) {
+      const updated = links.map(link => {
+        if (link.id === editingDocLinkId) {
+          return {
+            ...link,
+            name: docName.trim().toUpperCase(),
+            url: docUrl.trim(),
+            category: docCategory.trim().toUpperCase(),
+            description: docDescription.trim(),
+            params: docParams.trim()
+          };
+        }
+        return link;
+      });
+      setLocalSettings({ ...localSettings, documentLinks: updated });
+      setEditingDocLinkId(null);
+    } else {
+      const newLink = {
+        id: crypto.randomUUID(),
+        name: docName.trim().toUpperCase(),
+        url: docUrl.trim(),
+        category: docCategory.trim().toUpperCase(),
+        description: docDescription.trim(),
+        params: docParams.trim()
+      };
+      setLocalSettings({ ...localSettings, documentLinks: [...links, newLink] });
+    }
+
+    setDocName('');
+    setDocUrl('');
+    setDocCategory('GERAL');
+    setDocDescription('');
+    setDocParams('');
+    alert("Vínculo de documento salvo com sucesso! Clique em 'Aplicar Ajustes' no topo para registrar no banco de dados.");
+  };
+
   const handleAddGB = () => {
     if (!newGB.name.trim()) return;
     const gb = { id: crypto.randomUUID(), name: newGB.name.trim() };
@@ -934,25 +998,344 @@ export const Settings: React.FC<SettingsProps> = ({
       <div className="bg-white border rounded-3xl overflow-hidden min-h-[500px] shadow-sm">
         {activeTab === 'manual' && (
           <div className="p-8 space-y-6">
-            <h3 className="text-2xl font-black text-gray-900 uppercase">Manual de Operação Técnica</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-gray-50 p-6 rounded-2xl space-y-2 border">
-                <h4 className="font-black text-xs text-blue-600 uppercase">1. Identificação</h4>
-                <p className="text-[11px] text-gray-600 font-medium">Preencha Prefixo, Placa e KM. Escolha o ciclo de inspeção (Diário ou Semanal).</p>
-              </div>
-              <div className="bg-gray-50 p-6 rounded-2xl space-y-2 border">
-                <h4 className="font-black text-xs text-orange-600 uppercase">2. Mapeamento</h4>
-                <p className="text-[11px] text-gray-600 font-medium">Toque nas plantas da viatura para marcar pontos de avaria externa.</p>
-              </div>
-              <div className="bg-gray-50 p-6 rounded-2xl space-y-2 border">
-                <h4 className="font-black text-xs text-green-600 uppercase">3. Checklist</h4>
-                <p className="text-[11px] text-gray-600 font-medium">Marque SN (Sem Novidade) ou CN (Com Novidade) para cada item técnico.</p>
-              </div>
-              <div className="bg-gray-50 p-6 rounded-2xl space-y-2 border">
-                <h4 className="font-black text-xs text-purple-600 uppercase">4. Finalização</h4>
-                <p className="text-[11px] text-gray-600 font-medium">Assine digitalmente e gere o PDF para protocolo oficial.</p>
+            <div className="flex flex-col sm:flex-row justify-between sm:items-center border-b pb-4 gap-4">
+              <h3 className="text-2xl font-black text-gray-900 uppercase">Manual & Legislação</h3>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setManualSubTab('instructions')}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 transition-all ${manualSubTab === 'instructions' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  Instruções
+                </button>
+                <button
+                  onClick={() => setManualSubTab('links')}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 transition-all ${manualSubTab === 'links' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Documentos & Links
+                </button>
               </div>
             </div>
+
+            {manualSubTab === 'instructions' ? (
+              <div className="space-y-8 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+                {/* 1. OPERAÇÃO DO CHECKLIST */}
+                <section className="space-y-4">
+                  <div className="flex items-center gap-3 border-b border-gray-100 pb-2">
+                    <div className="bg-blue-600 text-white w-10 h-10 rounded-2xl flex items-center justify-center font-black shadow-lg shadow-blue-100">01</div>
+                    <h4 className="text-sm font-black uppercase text-gray-900">Operação do Checklist</h4>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100">
+                      <h5 className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Identificação e Ciclo</h5>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">Insira o prefixo da viatura, placa e odômetro atual. Selecione o tipo de viatura (Leve/Pesada, Moto ou AB) para carregar os itens específicos. Escolha entre inspeção <b>Diária</b> ou <b>Semanal</b>.</p>
+                    </div>
+                    <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100">
+                      <h5 className="text-[10px] font-black text-orange-600 uppercase tracking-widest mb-1">Mapa de Avarias</h5>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">Utilize as plantas interativas para marcar danos externos. Clique sobre o local do dano para abrir o menu de tipo de avaria (Risco, Amassado, Quebra, etc.). Isso substitui o preenchimento manual em papel.</p>
+                    </div>
+                    <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100">
+                      <h5 className="text-[10px] font-black text-green-600 uppercase tracking-widest mb-1">Itens Técnicos (SN/CN)</h5>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">Cada item deve ter seu status definido: <b>SN</b> (Sem Novidade) para itens operantes ou <b>CN</b> (Com Novidade) para falhas. Itens CN exigem obrigatoriamente um comentário e, opcionalmente, fotos.</p>
+                    </div>
+                    <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100">
+                      <h5 className="text-[10px] font-black text-purple-600 uppercase tracking-widest mb-1">Assinatura e PDF</h5>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">Após conferir todos os itens, assine na tela. Use o botão <b>Finalizar</b> para gerar o relatório em PDF altamente detalhado, pronto para impressão ou compartilhamento via WhatsApp.</p>
+                    </div>
+                  </div>
+                </section>
+
+                {/* 2. MONITORAMENTO (DASHBOARD) */}
+                <section className="space-y-4">
+                  <div className="flex items-center gap-3 border-b border-gray-100 pb-2">
+                    <div className="bg-cyan-600 text-white w-10 h-10 rounded-2xl flex items-center justify-center font-black shadow-lg shadow-cyan-100">02</div>
+                    <h4 className="text-sm font-black uppercase text-gray-900">Monitoramento (Dashboard)</h4>
+                  </div>
+                  <div className="bg-gray-900 p-8 rounded-[2.5rem] text-white">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                       <div className="space-y-3">
+                          <h5 className="text-xs font-black uppercase text-cyan-400 tracking-widest flex items-center gap-2"><LayoutDashboard className="w-4 h-4"/> Prontidão em Tempo Real</h5>
+                          <p className="text-xs text-gray-300 font-medium leading-loose">O Dashboard oferece uma visão macro da frota. Viaturas com checklists pendentes aparecem em <b>Vermelho</b>. Viaturas com checklists realizados aparecem em <b>Verde</b> (Sem Novidades) ou <b>Laranja</b> (Com Novidades).</p>
+                       </div>
+                       <div className="space-y-3">
+                          <h5 className="text-xs font-black uppercase text-cyan-400 tracking-widest flex items-center gap-2"><Search className="w-4 h-4"/> Filtros Avançados</h5>
+                          <p className="text-xs text-gray-300 font-medium leading-loose">Filtre a visualização por <b>Posto de Serviço</b> ou por <b>Status de Conformidade</b>. Você pode isolar rapidamente viaturas que possuem justificativas pendentes no mês corrente.</p>
+                       </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* 3. ALERTAS E MANUTENÇÃO */}
+                <section className="space-y-4">
+                  <div className="flex items-center gap-3 border-b border-gray-100 pb-2">
+                    <div className="bg-red-600 text-white w-10 h-10 rounded-2xl flex items-center justify-center font-black shadow-lg shadow-red-100">03</div>
+                    <h4 className="text-sm font-black uppercase text-gray-900">Alertas de Manutenção</h4>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-white border-2 border-red-50 p-6 rounded-3xl">
+                      <div className="flex items-center gap-3 mb-3">
+                         <div className="bg-red-100 p-2 rounded-xl"><TrendingUp className="w-4 h-4 text-red-600" /></div>
+                         <h5 className="text-[10px] font-black text-red-600 uppercase tracking-widest">Baseado em KM</h5>
+                      </div>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">Programe trocas de óleo, pneus ou revisões definindo o KM alvo. O sistema emitirá um alerta visual no dashboard conforme a viatura se aproxima do limite estabelecido.</p>
+                    </div>
+                    <div className="bg-white border-2 border-indigo-50 p-6 rounded-3xl">
+                      <div className="flex items-center gap-3 mb-3">
+                         <div className="bg-indigo-100 p-2 rounded-xl"><Calendar className="w-4 h-4 text-indigo-600" /></div>
+                         <h5 className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Calendário</h5>
+                      </div>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">Ideal para licenciamentos, seguros ou vistorias de compressores. Defina a data de expiração e o prazo de antecedência para o aviso prévio.</p>
+                    </div>
+                  </div>
+                </section>
+
+                {/* 4. GESTÃO E CONFIGURAÇÕES */}
+                <section className="space-y-4">
+                  <div className="flex items-center gap-3 border-b border-gray-100 pb-2">
+                    <div className="bg-amber-600 text-white w-10 h-10 rounded-2xl flex items-center justify-center font-black shadow-lg shadow-amber-100">04</div>
+                    <h4 className="text-sm font-black uppercase text-gray-900">Gestão e Auditoria</h4>
+                  </div>
+                  <div className="bg-gray-50 p-8 rounded-[2.5rem] border border-gray-200">
+                    <ul className="space-y-4">
+                      <li className="flex gap-4">
+                        <div className="bg-white p-2 rounded-xl border shadow-sm h-fit"><Users className="w-4 h-4 text-amber-600" /></div>
+                        <div>
+                          <p className="text-xs font-black text-gray-900 uppercase">Hierarquia de Acesso</p>
+                          <p className="text-[11px] text-gray-500 font-medium">Os administradores podem gerenciar usuários e suas permissões: acesso a relatórios, configurações de itens ou auditoria geral de acessos.</p>
+                        </div>
+                      </li>
+                      <li className="flex gap-4">
+                        <div className="bg-white p-2 rounded-xl border shadow-sm h-fit"><Database className="w-4 h-4 text-amber-600" /></div>
+                        <div>
+                          <p className="text-xs font-black text-gray-900 uppercase">Nuvem e Sincronização</p>
+                          <p className="text-[11px] text-gray-500 font-medium">Todos os dados são persistidos no servidor (Google Sheets). Use o botão de sincronização para garantir que as informações locais correspondam ao banco oficial.</p>
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
+                </section>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {(() => {
+                  const canEditDocs = !!currentUser?.permissions?.admin || currentUser?.username?.toLowerCase() === 'cavalieri';
+                  return (
+                    <>
+                      {canEditDocs ? (
+                        <div className="bg-blue-50 border border-blue-200 p-6 rounded-2xl space-y-4 shadow-sm">
+                          <div className="flex items-center gap-2 border-b border-blue-100 pb-2">
+                            <ShieldCheck className="w-5 h-5 text-blue-600" />
+                            <div>
+                              <h4 className="font-black text-sm text-blue-900 uppercase">Gerenciar Documentos de Referência</h4>
+                              <p className="text-[9px] font-bold text-blue-500 uppercase">Adicione ou edite links acessíveis a todos os usuários</p>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Nome do Documento</label>
+                              <input
+                                type="text"
+                                placeholder="EX: POP N° 12 - SEGUIMENTO"
+                                value={docName}
+                                onChange={e => setDocName(e.target.value.toUpperCase())}
+                                className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2 text-xs font-bold"
+                              />
+                            </div>
+                            
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-gray-500 uppercase ml-1">URL do Link</label>
+                              <input
+                                type="text"
+                                placeholder="EX: https://exemplo.com/pop.pdf"
+                                value={docUrl}
+                                onChange={e => setDocUrl(e.target.value)}
+                                className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2 text-xs font-bold text-blue-600 font-mono"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Categoria de Legislação</label>
+                              <select
+                                value={docCategory}
+                                onChange={e => setDocCategory(e.target.value)}
+                                className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2 text-xs font-bold"
+                              >
+                                <option value="GERAL">CONCEITOS GERAIS</option>
+                                <option value="REGULAMENTO">REGULAMENTAÇÕES / LEIS</option>
+                                <option value="DIRETRIZ">DIRETRIZES TÉCNICAS</option>
+                                <option value="MANUAL_SERVICO">MANUAL DE SERVIÇO</option>
+                                <option value="OUTROS">OUTROS RECURSOS</option>
+                              </select>
+                            </div>
+
+                            <div className="space-y-1 md:col-span-2">
+                              <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Descrição do Documento</label>
+                              <input
+                                type="text"
+                                placeholder="EX: Diretriz referente ao preenchimento de checklists semanais das viaturas leves"
+                                value={docDescription}
+                                onChange={e => setDocDescription(e.target.value)}
+                                className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2 text-xs font-bold"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Parâmetros de Edição (Edit Params)</label>
+                              <input
+                                type="text"
+                                placeholder="EX: lang=pt-BR&view=fit"
+                                value={docParams}
+                                onChange={e => setDocParams(e.target.value)}
+                                className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2 text-xs font-bold font-mono"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              onClick={handleAddOrEditDocLink}
+                              className={`flex-1 p-2.5 rounded-xl text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
+                                editingDocLinkId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-600 hover:bg-blue-700'
+                              }`}
+                            >
+                              {editingDocLinkId ? (
+                                <>
+                                  <Save className="w-4 h-4" />
+                                  Salvar Link Alterado
+                                </>
+                              ) : (
+                                <>
+                                  <Plus className="w-4 h-4" />
+                                  Registrar Novo Documento
+                                </>
+                              )}
+                            </button>
+
+                            {editingDocLinkId && (
+                              <button
+                                onClick={() => {
+                                  setEditingDocLinkId(null);
+                                  setDocName('');
+                                  setDocUrl('');
+                                  setDocCategory('GERAL');
+                                  setDocDescription('');
+                                  setDocParams('');
+                                }}
+                                className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-4 py-2 rounded-xl text-xs font-black uppercase transition-all"
+                              >
+                                Cancelar
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-gray-50 border p-4 rounded-2xl flex items-center gap-3">
+                          <Info className="w-5 h-5 text-gray-500 shrink-0" />
+                          <div>
+                            <h4 className="font-extrabold text-xs text-gray-700 uppercase">Biblioteca de Manuais e Legislação</h4>
+                            <p className="text-[10px] font-bold text-gray-400 uppercase">Consulte os documentos oficiais abaixo. Apenas administradores e o super usuário podem incluir ou editar links.</p>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <h4 className="text-xs font-black uppercase text-gray-400">Documentação Cadastrada</h4>
+                          <span className="text-[9px] font-black text-gray-400 uppercase bg-gray-100 px-2 py-0.5 rounded border">
+                            {(localSettings.documentLinks || []).length} link(s)
+                          </span>
+                        </div>
+                        
+                        {(!localSettings.documentLinks || localSettings.documentLinks.length === 0) ? (
+                          <div className="p-12 text-center border-2 border-dashed rounded-3xl bg-gray-50">
+                            <FileText className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                            <p className="text-xs text-gray-400 font-bold uppercase text-center">Nenhum documento cadastrado</p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {localSettings.documentLinks.map((link) => {
+                              const destinationUrl = link.url + (link.params ? (link.url.includes('?') ? '&' : '?') + link.params : '');
+                              return (
+                                <div key={link.id} className="bg-white border rounded-2xl p-4 flex flex-col justify-between hover:shadow-md transition-all">
+                                  <div className="space-y-1">
+                                    <div className="flex justify-between items-start gap-2 flex-wrap">
+                                      <span className="bg-blue-50 text-blue-600 text-[8px] font-black px-2 py-0.5 rounded-full uppercase">
+                                        {link.category || 'GERAL'}
+                                      </span>
+                                      {link.params && (
+                                        <span className="bg-purple-50 text-purple-600 text-[8px] font-mono px-2 py-0.5 rounded uppercase" title="Editing parameters configured">
+                                          Config: {link.params}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <h5 className="font-black text-gray-800 text-xs uppercase tracking-tight mt-1.5 leading-tight">
+                                      {link.name}
+                                    </h5>
+                                    {link.description && (
+                                      <p className="text-[10px] text-gray-500 font-medium">
+                                        {link.description}
+                                      </p>
+                                    )}
+                                    <div className="text-[8px] font-mono text-gray-400 truncate mt-1">
+                                      {link.url}
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-between border-t pt-2.5 mt-3.5 gap-2">
+                                    <a 
+                                      href={destinationUrl} 
+                                      target="_blank" 
+                                      rel="noreferrer" 
+                                      className="text-[10px] font-black uppercase text-blue-600 hover:text-blue-800 flex items-center gap-1.5 transition-all"
+                                    >
+                                      <ExternalLink className="w-3.5 h-3.5 text-blue-500" />
+                                      Visualizar
+                                    </a>
+
+                                    {canEditDocs && (
+                                      <div className="flex gap-1">
+                                        <button
+                                          onClick={() => {
+                                            setEditingDocLinkId(link.id);
+                                            setDocName(link.name);
+                                            setDocUrl(link.url);
+                                            setDocCategory(link.category || 'GERAL');
+                                            setDocDescription(link.description || '');
+                                            setDocParams(link.params || '');
+                                          }}
+                                          className="text-amber-500 hover:text-amber-700 bg-amber-50 p-1.5 rounded-lg transition-all"
+                                          title="Editar"
+                                        >
+                                          <Edit2 className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            if (confirm(`Excluir o link do documento "${link.name}"?`)) {
+                                              const updated = (localSettings.documentLinks || []).filter(l => l.id !== link.id);
+                                              setLocalSettings({ ...localSettings, documentLinks: updated });
+                                            }
+                                          }}
+                                          className="text-red-500 hover:text-red-700 bg-red-50 p-1.5 rounded-lg transition-all"
+                                          title="Excluir"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         )}
 
@@ -2107,6 +2490,7 @@ export const Settings: React.FC<SettingsProps> = ({
               currentUser={currentUser}
               onFetch={fetchLogs}
               isLoading={isLoadingLogs}
+              onUpdateVehicles={(updated) => onSave({ ...localSettings, vehicles: updated })}
             />
           </ErrorBoundary>
         )}
@@ -2133,7 +2517,7 @@ export const Settings: React.FC<SettingsProps> = ({
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Descrição do Sistema</label>
                 <textarea 
-                  value={localSettings.appDescription || 'Desenvolvido para gestão técnica de frotas de emergência e operacionais. Sistema resiliente de auditoria com reconstrução dinâmica de relatórios espelho e controle de acessos multinível.'} 
+                  value={localSettings.appDescription || 'Plataforma avançada para gestão técnica de frotas de emergência. Inclui monitoramento de prontidão em tempo real, dashboard analítico, gestão de alertas de manutenção preditiva (por KM e data), e sistema de auditoria multinível com persistência em nuvem (Google Sheets).'} 
                   onChange={e => setLocalSettings({...localSettings, appDescription: e.target.value})} 
                   placeholder="DESCRIÇÃO DO SISTEMA"
                   rows={4}
@@ -2146,7 +2530,7 @@ export const Settings: React.FC<SettingsProps> = ({
                 <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Desenvolvido por</label>
                 <input 
                   type="text" 
-                  value={localSettings.developedBy || 'Equipe de Gestão de Frotas'} 
+                  value={localSettings.developedBy || 'Equipe de Gestão de Frota Intelligence'} 
                   onChange={e => setLocalSettings({...localSettings, developedBy: e.target.value})} 
                   placeholder="DESENVOLVEDOR"
                   readOnly={!isSuperUser}
@@ -2155,7 +2539,7 @@ export const Settings: React.FC<SettingsProps> = ({
               </div>
             </div>
 
-            <p className="text-xs font-bold text-gray-400 uppercase tracking-[0.3em]">Versão 3.8.0 Auditoria</p>
+            <p className="text-xs font-bold text-gray-400 uppercase tracking-[0.3em]">Versão 4.0.0 Intelligence</p>
             
             <div className="bg-blue-50 border border-blue-100 p-4 rounded-2xl max-w-sm">
               <p className="text-[10px] text-blue-800 font-bold text-center leading-relaxed">
