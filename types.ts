@@ -102,6 +102,7 @@ export interface UserPermissions {
   manageReports?: boolean;
   completeMaintenance?: boolean;
   deleteMaintenance?: boolean;
+  shouldChangePassword?: boolean;
 }
 
 export interface User {
@@ -111,6 +112,7 @@ export interface User {
   name: string;
   rank?: string;
   permissions: UserPermissions;
+  shouldChangePassword?: boolean;
 }
 
 export interface DocumentLink {
@@ -149,6 +151,8 @@ export interface AppSettings {
   appName?: string;
   appDescription?: string;
   developedBy?: string;
+  stationOrder?: string[];
+  dashboardCharts?: string[];
 }
 
 export interface AuditLog {

@@ -241,11 +241,12 @@ const App: React.FC = () => {
         console.log("Iniciando sincronização completa com banco de dados na inicialização...");
         
         // Disparar requisições em paralelo
-        const [settingsRes, usersRes, vehiclesRes, stationsRes] = await Promise.all([
+        const [settingsRes, usersRes, vehiclesRes, stationsRes, docsRes] = await Promise.all([
           fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getSettings&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
           fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
           fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getVehicles&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null)
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getDocuments&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null)
         ]);
 
         setSettings(prev => {
@@ -273,6 +274,11 @@ const App: React.FC = () => {
           // 4. Sincronizar Postos
           if (Array.isArray(stationsRes) && stationsRes.length > 0) {
             updated.stations = stationsRes;
+          }
+
+          // 5. Sincronizar Documentos
+          if (Array.isArray(docsRes) && docsRes.length > 0) {
+            updated.documentLinks = docsRes;
           }
 
           localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
@@ -515,6 +521,7 @@ const App: React.FC = () => {
       vehicles: JSON.stringify(newSettings.vehicles || []),
       stations: JSON.stringify(newSettings.stations || []),
       users: JSON.stringify(newSettings.users || []),
+      documents: JSON.stringify(newSettings.documentLinks || []),
       timestamp: new Date().toISOString()
     };
 
@@ -609,6 +616,42 @@ const App: React.FC = () => {
     }
 
     if (validatedUser) {
+      if (validatedUser.shouldChangePassword) {
+        const newPass = prompt("Sua senha expirou ou foi solicitada a alteração pelo administrador.\n\nDigite sua NOVA SENHA:", "");
+        if (!newPass || newPass.trim().length < 4) {
+          alert("Aleração de senha cancelada ou senha muito curta. O acesso foi negado.");
+          setIsSyncing(false);
+          return;
+        }
+
+        // Atualizar senha no servidor e localmente
+        try {
+          const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+          if (rawUrl) {
+            await fetch(rawUrl, {
+              method: 'POST',
+              mode: 'no-cors',
+              body: JSON.stringify({ 
+                action: 'saveUser', 
+                ...validatedUser, 
+                password: newPass.trim(),
+                shouldChangePassword: false 
+              })
+            });
+            validatedUser.password = newPass.trim();
+            validatedUser.shouldChangePassword = false;
+            
+            // Atualizar o settings local também para não deslogar imediatamente se salvar falhar no background
+            setSettings(prev => ({
+              ...prev,
+              users: (prev.users || []).map(u => u.id === validatedUser.id ? validatedUser : u)
+            }));
+          }
+        } catch (err) {
+          console.warn("Erro ao atualizar nova senha:", err);
+        }
+      }
+
       setCurrentUser(validatedUser);
       setShowLoginModal(false);
       setLoginUsername('');
@@ -634,6 +677,9 @@ const App: React.FC = () => {
     // Se não há usuário logado (Visitante), permitimos visualizar os menus para que possam ser desbloqueados internamente
     if (!currentUser) return true;
     
+    // Superusuario cavalieri tem permissão plena sempre
+    if (currentUser.username.toLowerCase() === 'cavalieri') return true;
+
     // Se há usuário logado, respeitamos estritamente suas permissões cadastradas
     return currentUser.permissions[screen];
   };
@@ -674,7 +720,7 @@ const App: React.FC = () => {
     e.target.value = ''; // Reset input para permitir nova importação do mesmo arquivo se necessário
   };
 
-  const saveLogToGoogleSheets = async () => {
+  const saveLogToGoogleSheets = async (pdfUrl?: string) => {
     const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
     const targetUrl = rawUrl?.trim();
     
@@ -718,7 +764,8 @@ const App: React.FC = () => {
       itemsDetail: JSON.stringify(itemsDetailArray),
       fullData: JSON.stringify(dataForMirror),
       generalObservation: data.generalObservation,
-      screenshot: "" 
+      screenshot: "",
+      pdfUrl: pdfUrl || ""
     };
 
     if (logData.fullData.length > 45000) {
@@ -780,6 +827,18 @@ const App: React.FC = () => {
     }
     if (!data.prefix.trim() || !data.plate.trim() || !data.km.trim() || !data.signatureName?.trim()) {
       alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios.");
+      return;
+    }
+
+    // Verificar se já existe lançamento hoje para esta viatura
+    const todayStr = new Date().toLocaleDateString('pt-BR');
+    const alreadyDone = logs.some(l => 
+      l.prefix === data.prefix && 
+      String(l.date).startsWith(todayStr)
+    );
+
+    if (alreadyDone) {
+      alert(`BLOQUEIO: Já existe um checklist realizado hoje para a viatura ${data.prefix}. Apenas um lançamento por dia é permitido.`);
       return;
     }
 
@@ -874,23 +933,21 @@ const App: React.FC = () => {
       return;
     }
 
+    // Verificar se já existe lançamento hoje para esta viatura
+    const todayStr = new Date().toLocaleDateString('pt-BR');
+    const alreadyDone = logs.some(l => 
+      l.prefix === data.prefix && 
+      String(l.date).startsWith(todayStr)
+    );
+
+    if (alreadyDone) {
+      alert(`BLOQUEIO: Já existe um checklist realizado hoje para a viatura ${data.prefix}. Apenas um lançamento por dia é permitido.`);
+      return;
+    }
+
     setIsSaving(true);
     try {
-      // 1. Salvar log na planilha (Apps Script + Sheets Autenticado)
-      await saveLogToGoogleSheets();
-      await saveAuditLog('SAVE_REPORT_DRIVE', `Checklist ${data.checklistType} enviado para Google Drive (VTR: ${data.prefix})`);
-      
-      if (settings.googleSpreadsheetId) {
-        const logToAppend: LogEntry = {
-          ...data,
-          date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
-          signatureRank: data.signatureRank || 'CONFERENTE',
-          signatureName: data.signatureName || 'VISITANTE'
-        } as any;
-        await sheetsService.appendLog(googleToken, settings.googleSpreadsheetId, logToAppend);
-      }
-
-      // 2. Capturar e Gerar PDF
+      // 1. Capturar e Gerar PDF (Antes de salvar log para ter o link se necessário)
       const element = checklistRef.current;
       if (!element) throw new Error("Elemento do checklist não encontrado");
 
@@ -919,10 +976,25 @@ const App: React.FC = () => {
       
       const fileName = `Checklist_${data.prefix || 'VTR'}_${data.date.replace(/-/g, '')}_${new Date().getTime()}.pdf`;
       
-      // 3. Enviar para o Drive
-      await driveService.uploadFile(googleToken, pdfBlob, fileName, 'application/pdf');
+      // 2. Enviar para o Drive
+      const fileId = await driveService.uploadFile(googleToken, pdfBlob, fileName, 'application/pdf');
+      const driveUrl = `https://drive.google.com/file/d/${fileId}/view`;
+
+      // 3. Salvar log na planilha (Apps Script + Sheets Autenticado) com o link do PDF
+      await saveLogToGoogleSheets(driveUrl);
+      await saveAuditLog('SAVE_REPORT_DRIVE', `Checklist ${data.checklistType} enviado para Google Drive (VTR: ${data.prefix})`);
       
-      alert(`Protocolo enviado com sucesso para o Google Drive!\nArquivo: ${fileName}`);
+      if (settings.googleSpreadsheetId) {
+        const logToAppend: LogEntry = {
+          ...data,
+          date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
+          signatureRank: data.signatureRank || 'CONFERENTE',
+          signatureName: data.signatureName || 'VISITANTE'
+        } as any;
+        await sheetsService.appendLog(googleToken, settings.googleSpreadsheetId, logToAppend);
+      }
+      
+      alert(`Protocolo enviado com sucesso para o Google Drive!\nArquivo: ${fileName}\nO link foi registrado na planilha.`);
       fetchDashboardData();
     } catch (err) {
       console.error("Erro na integração Drive:", err);
@@ -939,6 +1011,18 @@ const App: React.FC = () => {
     }
     if (!data.prefix.trim() || !data.plate.trim() || !data.km.trim() || !data.signatureName?.trim()) {
       alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios.");
+      return;
+    }
+
+    // Verificar se já existe lançamento hoje para esta viatura
+    const today = new Date().toLocaleDateString('pt-BR');
+    const alreadyDone = logs.some(l => 
+      l.prefix === data.prefix && 
+      String(l.date).startsWith(today)
+    );
+
+    if (alreadyDone) {
+      alert(`BLOQUEIO: Já existe um checklist realizado hoje para a viatura ${data.prefix}. Apenas um lançamento por dia é permitido.`);
       return;
     }
 

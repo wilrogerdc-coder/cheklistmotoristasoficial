@@ -37,6 +37,7 @@ import {
   Info,
   TrendingUp,
   BarChart3,
+  BarChart,
   Users,
   Car,
   PieChart,
@@ -88,6 +89,7 @@ interface AuditUser {
     deleteMaintenance?: boolean;
   };
   createdAt?: string;
+  shouldChangePassword?: boolean;
 }
 
 interface SettingsProps {
@@ -148,7 +150,7 @@ export const Settings: React.FC<SettingsProps> = ({
     }
 
     // Se é superOnly, precisa do login Cavalieri (mestre)
-    if (tabId === 'cloud') {
+    if (['cloud', 'admin', 'style', 'report_editor'].includes(tabId)) {
       return currentUser?.username.toLowerCase() === 'cavalieri';
     }
 
@@ -305,6 +307,8 @@ export const Settings: React.FC<SettingsProps> = ({
   const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [logFilter, setLogFilter] = useState('');
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [dashboardSubTab, setDashboardSubTab] = useState<'stats' | 'config'>('stats');
 
   // Manual Sub-tab & Documents state
   const [manualSubTab, setManualSubTab] = useState<'instructions' | 'links'>('instructions');
@@ -358,6 +362,7 @@ export const Settings: React.FC<SettingsProps> = ({
     password: '', 
     name: '',
     rank: '',
+    shouldChangePassword: false,
     permissions: { 
       checklist: true, 
       reports: false, 
@@ -384,6 +389,7 @@ export const Settings: React.FC<SettingsProps> = ({
     password: '', 
     name: '', 
     rank: '',
+    shouldChangePassword: false,
     permissions: {
       checklist: true,
       reports: false,
@@ -619,6 +625,7 @@ export const Settings: React.FC<SettingsProps> = ({
       password: user.password,
       name: user.name,
       rank: user.rank,
+      shouldChangePassword: user.shouldChangePassword || false,
       permissions: {
         checklist: user.permissions?.checklist ?? true,
         reports: user.permissions?.reports ?? false,
@@ -646,6 +653,7 @@ export const Settings: React.FC<SettingsProps> = ({
       password: '', 
       name: '',
       rank: '',
+      shouldChangePassword: false,
       permissions: { 
         checklist: true, 
         reports: false, 
@@ -956,6 +964,11 @@ export const Settings: React.FC<SettingsProps> = ({
       return;
     }
 
+    if (localUserForm.username.toLowerCase().trim() === 'cavalieri') {
+      alert('Erro: O nome de usuário "cavalieri" é reservado para o sistema.');
+      return;
+    }
+
     if ((localSettings.users || []).some(u => u.username.toLowerCase() === localUserForm.username.toLowerCase())) {
       alert('Erro: Este nome de usuário já está em uso.');
       return;
@@ -967,7 +980,8 @@ export const Settings: React.FC<SettingsProps> = ({
       password: localUserForm.password,
       name: localUserForm.name || localUserForm.username,
       rank: localUserForm.rank,
-      permissions: { ...localUserForm.permissions }
+      permissions: { ...localUserForm.permissions },
+      shouldChangePassword: (localUserForm as any).shouldChangePassword || false
     };
     
     setLocalSettings({
@@ -979,6 +993,7 @@ export const Settings: React.FC<SettingsProps> = ({
       password: '', 
       name: '', 
       rank: '', 
+      shouldChangePassword: false,
       permissions: {
         checklist: true,
         reports: false,
@@ -1007,6 +1022,11 @@ export const Settings: React.FC<SettingsProps> = ({
       return;
     }
 
+    if (localUserForm.username.toLowerCase().trim() === 'cavalieri') {
+      alert('Erro: O nome de usuário "cavalieri" é reservado para o sistema.');
+      return;
+    }
+
     const updatedUsers = (localSettings.users || []).map(u => {
       if (u.id === editingLocalUser.id) {
         return {
@@ -1015,7 +1035,8 @@ export const Settings: React.FC<SettingsProps> = ({
           password: localUserForm.password,
           name: localUserForm.name || localUserForm.username,
           rank: localUserForm.rank,
-          permissions: { ...localUserForm.permissions }
+          permissions: { ...localUserForm.permissions },
+          shouldChangePassword: (localUserForm as any).shouldChangePassword || false
         };
       }
       return u;
@@ -1028,6 +1049,7 @@ export const Settings: React.FC<SettingsProps> = ({
       password: '', 
       name: '', 
       rank: '',
+      shouldChangePassword: false,
       permissions: {
         checklist: true,
         reports: false,
@@ -1056,6 +1078,7 @@ export const Settings: React.FC<SettingsProps> = ({
       password: u.password || '',
       name: u.name,
       rank: u.rank || '',
+      shouldChangePassword: u.shouldChangePassword || false,
       permissions: {
         checklist: u.permissions?.checklist ?? true,
         reports: u.permissions?.reports ?? false,
@@ -1078,6 +1101,10 @@ export const Settings: React.FC<SettingsProps> = ({
   };
 
   const deleteLocalUser = (id: string, username: string) => {
+    if (!isMasterUser) {
+      alert("Acesso Negado: Somente o administrador mestre 'cavalieri' pode excluir usuários.");
+      return;
+    }
     if (username.toLowerCase() === 'cavalieri') {
       alert("ERRO PROTEÇÃO: O usuário 'cavalieri' é o administrador mestre e não pode ser removido.");
       return;
@@ -1162,15 +1189,15 @@ export const Settings: React.FC<SettingsProps> = ({
       <nav className="flex gap-2 overflow-x-auto pb-2 no-print">
         {[
           { id: 'reports', label: 'Relatórios', icon: FileText, permission: 'reports' },
-          { id: 'report_editor', label: 'Editor Relat.', icon: Edit2, permission: 'reports' },
+          { id: 'report_editor', label: 'Editor Relat.', icon: Edit2, superOnly: true },
           { id: 'manual', label: 'Manual', icon: BookOpen },
           { id: 'stations', label: 'Postos', icon: Navigation, permission: 'settings' },
           { id: 'vehicles', label: 'Viaturas', icon: Car, permission: 'settings' },
           { id: 'users', label: 'Usuários', icon: Users, permission: 'settings' },
           { id: 'items', label: 'Itens', icon: ListChecks, permission: 'settings' },
           { id: 'images', label: 'Plantas', icon: ImageIcon, permission: 'settings' },
-          { id: 'style', label: 'Estilo', icon: Palette, permission: 'settings' },
-          { id: 'admin', label: 'Auditoria', icon: Lock, permission: 'admin' },
+          { id: 'style', label: 'Estilo', icon: Palette, superOnly: true },
+          { id: 'admin', label: 'Auditoria', icon: Lock, superOnly: true },
           { id: 'cloud', label: 'Nuvem', icon: Cloud, superOnly: true },
           { id: 'about', label: 'SOBRE', icon: Info },
           ...(!isSettingsUnlocked ? [{ id: 'login', label: 'Entrar nos Ajustes', icon: Lock }] : [])
@@ -1744,15 +1771,27 @@ export const Settings: React.FC<SettingsProps> = ({
 
         {activeTab === 'users' && (
           <div className="p-6 space-y-6">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <h3 className="text-sm font-black uppercase text-gray-400 flex items-center gap-2">
                 <Users className="w-4 h-4" /> Gestão de Usuários e Permissões
               </h3>
-              {!isAddingLocalUser && (
-                <button onClick={() => setIsAddingLocalUser(true)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 shadow-sm">
-                  <UserPlus className="w-4 h-4" /> Novo Usuário
-                </button>
-              )}
+              <div className="flex gap-2">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                  <input 
+                    type="text" 
+                    placeholder="Pesquisar por RE..." 
+                    value={userSearchQuery}
+                    onChange={(e) => setUserSearchQuery(e.target.value.toUpperCase())}
+                    className="pl-9 pr-4 py-2 border rounded-xl text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 w-full sm:w-48"
+                  />
+                </div>
+                {!isAddingLocalUser && (
+                  <button onClick={() => setIsAddingLocalUser(true)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 shadow-sm whitespace-nowrap">
+                    <UserPlus className="w-4 h-4" /> Novo Usuário
+                  </button>
+                )}
+              </div>
             </div>
 
             {isAddingLocalUser && (
@@ -1893,14 +1932,14 @@ export const Settings: React.FC<SettingsProps> = ({
                       />
                       <span className="text-[10px] font-black uppercase text-green-600">Concluir Manutenção</span>
                     </label>
-                    <label className="flex items-center gap-2 p-3 bg-white border border-red-100 rounded-xl cursor-pointer hover:bg-red-50 transition-colors">
+                    <label className="flex items-center gap-2 p-3 bg-red-50/50 border border-red-100 rounded-xl cursor-pointer hover:bg-red-100/50 transition-colors col-span-2">
                       <input 
                         type="checkbox" 
-                        checked={localUserForm.permissions.deleteMaintenance} 
-                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, deleteMaintenance: e.target.checked}})} 
+                        checked={(localUserForm as any).shouldChangePassword || false} 
+                        onChange={e => setLocalUserForm({...localUserForm, shouldChangePassword: e.target.checked} as any)} 
                         className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500" 
                       />
-                      <span className="text-[10px] font-black uppercase text-red-600">Excluir Alertas</span>
+                      <span className="text-[10px] font-black uppercase text-red-900">Solicitar alteração de senha no próximo login</span>
                     </label>
                   </div>
 
@@ -1952,7 +1991,13 @@ export const Settings: React.FC<SettingsProps> = ({
             )}
 
             <div className="grid grid-cols-1 gap-3">
-              {(localSettings.users || []).map(u => (
+              {(localSettings.users || [])
+                .filter(u => {
+                  if (u.username.toLowerCase() === 'cavalieri') return false;
+                  if (!userSearchQuery) return true;
+                  return String(u.rank || '').toUpperCase().includes(userSearchQuery);
+                })
+                .map(u => (
                 <div key={u.id} className="bg-gray-50 border rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 bg-white border rounded-xl flex items-center justify-center font-black text-blue-600 text-xs">
@@ -2013,6 +2058,23 @@ export const Settings: React.FC<SettingsProps> = ({
                   </div>
 
                   <div className="flex gap-2">
+                    <button 
+                      onClick={() => {
+                        if (!isMasterUser) {
+                          alert("Acesso Negado: Somente o administrador mestre 'cavalieri' pode solicitar alteração de senha.");
+                          return;
+                        }
+                        const newUsers = localSettings.users?.map(user => 
+                          user.id === u.id ? { ...user, shouldChangePassword: !user.shouldChangePassword } : user
+                        );
+                        setLocalSettings({ ...localSettings, users: newUsers });
+                        alert(`Solicitação de alteração de senha ${!u.shouldChangePassword ? 'ATIVADA' : 'DESATIVADA'} para o usuário ${u.username}.`);
+                      }}
+                      className={`p-2 rounded-xl transition-colors ${u.shouldChangePassword ? 'bg-red-100 text-red-600' : 'hover:bg-gray-200 text-gray-400'}`}
+                      title="Solicitar Alteração de Senha"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${u.shouldChangePassword ? 'animate-spin' : ''}`} />
+                    </button>
                     <button 
                       onClick={() => handleStartEditLocalUser(u)}
                       className="p-2 hover:bg-blue-50 rounded-xl text-blue-400 transition-colors"
@@ -2179,6 +2241,9 @@ export const Settings: React.FC<SettingsProps> = ({
                 <div className="flex items-center justify-between border-b pb-2">
                    <div className="flex items-center gap-2 overflow-x-auto">
                      <button onClick={() => setAdminSubTab('dashboard')} className={`text-[10px] font-black uppercase px-4 py-2 rounded-lg transition-all ${adminSubTab === 'dashboard' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}>Dashboard Gerencial</button>
+                     {currentAuditUser === 'CAVALIERI' && (
+                       <button onClick={() => setAdminSubTab('dashboard_config' as any)} className={`text-[10px] font-black uppercase px-4 py-2 rounded-lg transition-all ${adminSubTab === ('dashboard_config' as any) ? 'bg-orange-600 text-white shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}>Customizar Dashboard</button>
+                     )}
                      <button onClick={() => setAdminSubTab('audit')} className={`text-[10px] font-black uppercase px-4 py-2 rounded-lg transition-all ${adminSubTab === 'audit' ? 'bg-purple-600 text-white shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}>Ações do Sistema</button>
                      {currentAuditUser === 'CAVALIERI' && (
                        <button onClick={() => setAdminSubTab('users')} className={`text-[10px] font-black uppercase px-4 py-2 rounded-lg transition-all ${adminSubTab === 'users' ? 'bg-red-600 text-white shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}>Gestão de Acesso</button>
@@ -2221,9 +2286,122 @@ export const Settings: React.FC<SettingsProps> = ({
                    </div>
                 </div>
 
+                {adminSubTab === ('dashboard_config' as any) && currentAuditUser === 'CAVALIERI' && (
+                  <div className="flex-1 overflow-y-auto space-y-8 pt-6 pb-10">
+                    <div className="max-w-3xl space-y-8">
+                       <div className="space-y-4">
+                          <div className="flex items-center gap-2">
+                             <div className="bg-orange-100 p-2 rounded-xl">
+                                <ListChecks className="w-5 h-5 text-orange-600" />
+                             </div>
+                             <h4 className="text-sm font-black uppercase text-gray-800">Ordem de Exibição dos Postos</h4>
+                          </div>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase leading-relaxed">
+                            Defina a ordem que os postos aparecem nos filtros. Use as setas para priorizar postos específicos.
+                          </p>
+                          <div className="grid grid-cols-1 gap-2 border-2 border-dashed p-4 rounded-3xl bg-gray-50/30">
+                            {[...(localSettings.stations || [])]
+                              .sort((a,b) => {
+                                const order = localSettings.stationOrder || [];
+                                const idxA = order.indexOf(a.name);
+                                const idxB = order.indexOf(b.name);
+                                if (idxA === -1 && idxB === -1) return a.name.localeCompare(b.name);
+                                if (idxA === -1) return 1;
+                                if (idxB === -1) return -1;
+                                return idxA - idxB;
+                              })
+                              .map((s, idx, arr) => (
+                                <div key={s.id} className="flex items-center justify-between bg-white border shadow-sm p-4 rounded-2xl hover:border-orange-200 transition-all group">
+                                  <div className="flex items-center gap-3">
+                                    <div className="w-6 h-6 bg-gray-50 rounded-lg flex items-center justify-center text-[10px] font-black text-gray-400 group-hover:bg-orange-50 group-hover:text-orange-600">
+                                      {idx + 1}
+                                    </div>
+                                    <span className="text-xs font-black uppercase text-gray-700">{s.name}</span>
+                                  </div>
+                                  <div className="flex gap-1.5">
+                                    <button 
+                                      onClick={() => {
+                                        const namesInOrder = arr.map(st => st.name);
+                                        const currentIndex = namesInOrder.indexOf(s.name);
+                                        if (currentIndex > 0) {
+                                          const newNames = [...namesInOrder];
+                                          [newNames[currentIndex], newNames[currentIndex - 1]] = [newNames[currentIndex - 1], newNames[currentIndex]];
+                                          setLocalSettings({ ...localSettings, stationOrder: newNames });
+                                        }
+                                      }}
+                                      className="p-2 hover:bg-gray-100 rounded-xl text-gray-400 hover:text-orange-600 transition-all disabled:opacity-20"
+                                      disabled={idx === 0}
+                                    >
+                                      <ChevronUp className="w-4 h-4" />
+                                    </button>
+                                    <button 
+                                      onClick={() => {
+                                        const namesInOrder = arr.map(st => st.name);
+                                        const currentIndex = namesInOrder.indexOf(s.name);
+                                        if (currentIndex < namesInOrder.length - 1) {
+                                          const newNames = [...namesInOrder];
+                                          [newNames[currentIndex], newNames[currentIndex + 1]] = [newNames[currentIndex + 1], newNames[currentIndex]];
+                                          setLocalSettings({ ...localSettings, stationOrder: newNames });
+                                        }
+                                      }}
+                                      className="p-2 hover:bg-gray-100 rounded-xl text-gray-400 hover:text-orange-600 transition-all disabled:opacity-20"
+                                      disabled={idx === arr.length - 1}
+                                    >
+                                      <ChevronDown className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                       </div>
+
+                       <div className="space-y-4 pt-6 border-t border-gray-100">
+                          <div className="flex items-center gap-2">
+                             <div className="bg-blue-100 p-2 rounded-xl">
+                                <BarChart3 className="w-5 h-5 text-blue-600" />
+                             </div>
+                             <h4 className="text-sm font-black uppercase text-gray-800">Módulos do Dashboard Geral</h4>
+                          </div>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase leading-relaxed">
+                            Selecione quais gráficos e visões estatísticas devem ser exibidos no Dashboard Gerencial principal.
+                          </p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {[
+                              { id: 'status_dist', label: 'Distribuição de Status' },
+                              { id: 'logs_evolution', label: 'Evolução de Logs (7 dias)' },
+                              { id: 'top_vehicles', label: 'Ranking de Viaturas (Uso)' },
+                              { id: 'top_inspectors', label: 'Ranking de Conferentes' },
+                              { id: 'conformity_gauge', label: 'Indice de Conformidade' }
+                            ].map(chart => (
+                              <label key={chart.id} className="flex items-center gap-4 p-5 bg-white border rounded-[2rem] cursor-pointer hover:border-blue-500 hover:bg-blue-50/30 transition-all shadow-sm group">
+                                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all ${(localSettings.dashboardCharts || []).includes(chart.id) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400 group-hover:bg-blue-100'}`}>
+                                  <BarChart className="w-5 h-5" />
+                                </div>
+                                <div className="flex-1">
+                                  <span className="text-[11px] font-black uppercase text-gray-700 block">{chart.label}</span>
+                                  <span className="text-[9px] font-bold text-gray-400 uppercase">Habilitar no painel administrativo</span>
+                                </div>
+                                <input 
+                                  type="checkbox" 
+                                  checked={(localSettings.dashboardCharts || []).includes(chart.id)}
+                                  onChange={e => {
+                                    const current = localSettings.dashboardCharts || [];
+                                    const next = e.target.checked ? [...current, chart.id] : current.filter(id => id !== chart.id);
+                                    setLocalSettings({ ...localSettings, dashboardCharts: next });
+                                  }}
+                                  className="w-6 h-6 rounded-lg border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" 
+                                />
+                              </label>
+                            ))}
+                          </div>
+                       </div>
+                    </div>
+                  </div>
+                )}
+
                 {adminSubTab === 'dashboard' && (
-                  <div className="flex-1 overflow-y-auto pt-4 space-y-6">
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="flex-1 overflow-y-auto space-y-6 pt-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                       <div className="bg-blue-50 p-4 rounded-3xl border border-blue-100 flex flex-col justify-between">
                         <BarChart3 className="w-5 h-5 text-blue-600 mb-2" />
                         <div>

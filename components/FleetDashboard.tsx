@@ -8,7 +8,9 @@ import {
   AlertTriangle, 
   Clock, 
   Activity, 
-  BarChart2, 
+  BarChart2,
+  BarChart,
+  PieChart,
   TrendingUp, 
   ChevronRight,
   RefreshCw,
@@ -199,7 +201,17 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
       });
     });
 
-    return Object.values(stationMap).filter(s => s.vehicles.length > 0).sort((a, b) => a.name.localeCompare(b.name));
+    return Object.values(stationMap)
+      .filter(s => s.vehicles.length > 0)
+      .sort((a, b) => {
+        const order = settings.stationOrder || [];
+        const idxA = order.indexOf(a.name);
+        const idxB = order.indexOf(b.name);
+        if (idxA === -1 && idxB === -1) return a.name.localeCompare(b.name);
+        if (idxA === -1) return 1;
+        if (idxB === -1) return -1;
+        return idxA - idxB;
+      });
   }, [logs, settings, justifications, today, filterType, stationFilter]);
 
   const criticalAlertsSummary = useMemo(() => {
@@ -326,6 +338,7 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
     const { type, alertId } = secureAction;
     const alertDesc = selectedVehicleForAlerts.alerts?.find(a => a.id === alertId)?.description || 'Alerta';
 
+    // Se for o mestre, ignora as restrições de permissões individuais
     if (!isMaster && !user.permissions.admin) {
       if (type === 'DELETE' && !user.permissions.deleteMaintenance) {
         setAuthError('Usuário sem permissão para EXCLUIR alertas');
@@ -448,9 +461,10 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
             </button>
           </div>
         </div>
+      </div>
 
-        {/* Quick Stats Grid - Interactive */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mt-10">
+      {/* Quick Stats Grid - Interactive */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mt-10">
           <div 
             onClick={() => setFilterType('ALL')}
             className={`cursor-pointer p-6 rounded-3xl border-2 transition-all ${filterType === 'ALL' ? 'bg-blue-50 border-blue-500 shadow-md scale-105' : 'bg-white border-gray-100 hover:border-blue-200'}`}
@@ -515,8 +529,78 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
               <Activity className="w-4 h-4 text-indigo-400" />
             </div>
           </div>
-        </div>
       </div>
+
+      {/* Optional Charts Section */}
+      {(settings.dashboardCharts || []).length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {settings.dashboardCharts?.includes('status_dist') && (
+            <div className="bg-white border rounded-[2rem] p-6 shadow-sm">
+              <h4 className="text-[10px] font-black uppercase text-gray-400 mb-4 flex items-center gap-2">
+                <PieChart className="w-4 h-4" /> Distribuição de Status
+              </h4>
+              <div className="space-y-3">
+                {[
+                  { label: 'OK', count: stats.ok, color: 'bg-green-500' },
+                  { label: 'CN', count: stats.cn, color: 'bg-orange-500' },
+                  { label: 'Pendente', count: stats.pending, color: 'bg-red-500' }
+                ].map(item => (
+                  <div key={item.label} className="flex items-center gap-3">
+                    <div className={`w-3 h-3 rounded-full ${item.color}`} />
+                    <span className="text-[10px] font-black uppercase text-gray-600 flex-1">{item.label}</span>
+                    <span className="text-[10px] font-black text-gray-900">{item.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {settings.dashboardCharts?.includes('conformity_gauge') && (
+            <div className="bg-white border rounded-[2rem] p-6 shadow-sm flex flex-col items-center justify-center text-center">
+              <h4 className="text-[10px] font-black uppercase text-gray-400 mb-4 w-full text-left">
+                <TrendingUp className="w-4 h-4 inline mr-2" /> Nível de Conformidade
+              </h4>
+              <div className="relative w-32 h-32 flex items-center justify-center">
+                <svg className="w-full h-full transform -rotate-90">
+                  <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="12" fill="transparent" className="text-gray-100" />
+                  <circle 
+                    cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="12" fill="transparent" 
+                    strokeDasharray={364.4}
+                    strokeDashoffset={364.4 - (364.4 * stats.compliance) / 100}
+                    className="text-blue-600 transition-all duration-1000" 
+                  />
+                </svg>
+                <span className="absolute text-2xl font-black text-gray-900">{stats.compliance}%</span>
+              </div>
+              <p className="text-[9px] font-bold text-gray-400 uppercase mt-4">Frota Operacional Hoje</p>
+            </div>
+          )}
+
+          {settings.dashboardCharts?.includes('top_vehicles') && (
+            <div className="bg-white border rounded-[2rem] p-6 shadow-sm">
+              <h4 className="text-[10px] font-black uppercase text-gray-400 mb-4 flex items-center gap-2">
+                <BarChart className="w-4 h-4" /> Top Pendências (Frota)
+              </h4>
+              <div className="space-y-2 max-h-[150px] overflow-y-auto pr-2">
+                {stationsData.flatMap(s => s.vehicles)
+                  .filter(v => v.pendingDays > 0)
+                  .sort((a,b) => b.pendingDays - a.pendingDays)
+                  .slice(0, 5)
+                  .map(v => (
+                    <div key={v.prefix} className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase text-gray-600">{v.prefix}</span>
+                      <span className="text-[10px] font-black text-red-600">{v.pendingDays} dias</span>
+                    </div>
+                  ))
+                }
+                {stationsData.flatMap(s => s.vehicles).filter(v => v.pendingDays > 0).length === 0 && (
+                  <p className="text-[10px] text-gray-300 font-bold uppercase text-center py-4">Tudo em dia</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Critical Alerts Summary Section */}
       {criticalAlertsSummary.length > 0 && (

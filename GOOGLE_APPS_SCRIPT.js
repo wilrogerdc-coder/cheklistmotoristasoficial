@@ -21,7 +21,7 @@ function doPost(e) {
       let logSheet = sheet.getSheetByName('LOGS');
       if (!logSheet) {
         logSheet = sheet.insertSheet('LOGS');
-        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'ID PROTOCOLO', 'DADOS COMPLETOS']);
+        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'ID PROTOCOLO', 'LINK PDF', 'DADOS COMPLETOS']);
       }
       
       logSheet.appendRow([
@@ -34,6 +34,7 @@ function doPost(e) {
         data.inspector,
         data.itemsStatus,
         data.id,
+        data.pdfUrl || '',
         data.fullData
       ]);
 
@@ -106,7 +107,7 @@ function doPost(e) {
             'headerBgColor', 'headerLogoUrl1', 'headerLogoUrl2', 
             'printScale', 'defaultItems', 'vehicleImages', 'vehicleImageRatios',
             'reportTitle', 'weeklyLevesTitle', 'weeklyMotosTitle', 'weeklyAbTitle', 'dailyMotosTitle',
-            'watermarkUrl'
+            'watermarkUrl', 'documentLinks', 'stationOrder', 'dashboardCharts'
           ];
           keysToSave.forEach(function(key) {
             if (settingsObj[key] !== undefined) {
@@ -140,8 +141,31 @@ function doPost(e) {
       let uSheet = sheet.getSheetByName('USUARIOS');
       if (!uSheet) uSheet = sheet.insertSheet('USUARIOS');
       uSheet.clear();
-      uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES']);
-      users.forEach(u => uSheet.appendRow([u.id, u.name || '', u.username, u.password || '', u.rank || '', JSON.stringify(u.permissions)]));
+      uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES', 'FORCE_PASS_CHANGE']);
+      users.forEach(u => uSheet.appendRow([
+        u.id, 
+        u.name || '', 
+        u.username, 
+        u.password || '', 
+        u.rank || '', 
+        JSON.stringify(u.permissions),
+        u.shouldChangePassword ? 'SIM' : 'NAO'
+      ]));
+
+      // Sincronizar Documentos & Links
+      let dSheet = sheet.getSheetByName('DOCUMENTOS');
+      if (!dSheet) dSheet = sheet.insertSheet('DOCUMENTOS');
+      dSheet.clear();
+      dSheet.appendRow(['ID', 'NOME', 'URL', 'CATEGORIA', 'DESCRICAO', 'PARAMETROS']);
+      const docs = JSON.parse(data.documents || '[]');
+      docs.forEach(d => dSheet.appendRow([
+        d.id,
+        d.name,
+        d.url,
+        d.category || 'GERAL',
+        d.description || '',
+        d.params || ''
+      ]));
 
       return ContentService.createTextOutput(JSON.stringify({ result: 'success', message: 'Sincronização completa' }))
         .setMimeType(ContentService.MimeType.JSON);
@@ -152,7 +176,7 @@ function doPost(e) {
       let uSheet = sheet.getSheetByName('USUARIOS');
       if (!uSheet) {
         uSheet = sheet.insertSheet('USUARIOS');
-        uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES']);
+        uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES', 'FORCE_PASS_CHANGE']);
       }
       
       const rows = uSheet.getDataRange().getValues();
@@ -173,7 +197,8 @@ function doPost(e) {
         data.username,
         data.password || '',
         data.rank || '',
-        typeof data.permissions === 'string' ? data.permissions : JSON.stringify(data.permissions || { checklist: true, reports: true, settings: true })
+        typeof data.permissions === 'string' ? data.permissions : JSON.stringify(data.permissions || { checklist: true, reports: true, settings: true }),
+        data.shouldChangePassword ? 'SIM' : 'NAO'
       ];
       
       if (rowIndex > 0) {
@@ -279,7 +304,8 @@ function doGet(e) {
           username: userArr['USUARIO'],
           password: userArr['SENHA'],
           rank: userArr['RE'],
-          permissions: permissions
+          permissions: permissions,
+          shouldChangePassword: userArr['FORCE_PASS_CHANGE'] === 'SIM'
         };
       });
 
@@ -419,6 +445,32 @@ function doGet(e) {
         };
       });
       return ContentService.createTextOutput(JSON.stringify(stations))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action === 'getDocuments') {
+      const dSheet = sheet.getSheetByName('DOCUMENTOS');
+      if (!dSheet) {
+        return ContentService.createTextOutput(JSON.stringify([]))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      const rows = dSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const docs = rows.slice(1).map(function(row) {
+        let item = {};
+        headers.forEach((header, i) => {
+          item[header] = row[i];
+        });
+        return {
+          id: item['ID'] || '',
+          name: item['NOME'] || '',
+          url: item['URL'] || '',
+          category: item['CATEGORIA'] || 'GERAL',
+          description: item['DESCRICAO'] || '',
+          params: item['PARAMETROS'] || ''
+        };
+      });
+      return ContentService.createTextOutput(JSON.stringify(docs))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
