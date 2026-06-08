@@ -30,6 +30,9 @@ import {
   getAccessToken 
 } from './services/googleAuth';
 import { sheetsService } from './services/googleSheets';
+import { driveService } from './services/googleDrive';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 import { FleetDashboard } from './components/FleetDashboard';
 import { 
   Printer, 
@@ -53,7 +56,8 @@ import {
   RefreshCw,
   BookOpen,
   Info,
-  LayoutDashboard
+  LayoutDashboard,
+  Calendar
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -64,6 +68,10 @@ const App: React.FC = () => {
   
   const [view, setView] = useState<'checklist' | 'settings' | 'dashboard'>('checklist');
   const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login'>('items');
+  const [reportPreFilterPrefix, setReportPreFilterPrefix] = useState<string | undefined>();
+  const [reportPreFilterType, setReportPreFilterType] = useState<any | undefined>();
+  const [showReportSelectionModal, setShowReportSelectionModal] = useState(false);
+  const [selectedVehicleForReport, setSelectedVehicleForReport] = useState<string | null>(null);
   const [showDamageMap, setShowDamageMap] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -77,6 +85,29 @@ const App: React.FC = () => {
   const [justifications, setJustifications] = useState<Justification[]>([]);
   const [isFetchingDashboardData, setIsFetchingDashboardData] = useState(false);
   const checklistRef = useRef<HTMLDivElement>(null);
+
+  // Sincronização proativa de usuários ao abrir telas de login
+  useEffect(() => {
+    if (showLoginModal || (view === 'settings' && activeTabInSettings === 'login')) {
+      const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
+      if (targetUrl) {
+        setIsSyncing(true);
+        fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(res => {
+            if (Array.isArray(res) && res.length > 0) {
+              setSettings(prev => {
+                const updated = { ...prev, users: res };
+                localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
+                return updated;
+              });
+            }
+          })
+          .catch(err => console.warn("Erro ao sincronizar usuários proativamente:", err))
+          .finally(() => setIsSyncing(false));
+      }
+    }
+  }, [showLoginModal, view, activeTabInSettings]);
 
   const fetchDashboardData = async () => {
     const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
@@ -211,10 +242,10 @@ const App: React.FC = () => {
         
         // Disparar requisições em paralelo
         const [settingsRes, usersRes, vehiclesRes, stationsRes] = await Promise.all([
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getSettings`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getVehicles`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations`).then(r => r.ok ? r.json() : null).catch(() => null)
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getSettings&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getVehicles&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null)
         ]);
 
         setSettings(prev => {
@@ -520,36 +551,71 @@ const App: React.FC = () => {
     setView('checklist');
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = (settings.users || []).find(u => 
-      u.username.toLowerCase() === loginUsername.toLowerCase() && u.password === loginPassword
-    );
+    const cleanUsername = loginUsername.trim().toLowerCase();
+    
+    if (!cleanUsername || !loginPassword) {
+      alert('Informe usuário e senha.');
+      return;
+    }
 
-    // Super user legacy check
-    if (!user && loginUsername.toLowerCase() === 'cavalieri' && loginPassword === 'tricolor') {
-      const superUser: User = {
+    const findUserFromList = (userList: User[]) => {
+      return userList.find(u => 
+        u && u.username && u.username.toLowerCase().trim() === cleanUsername && 
+        u.password && u.password.toString() === loginPassword
+      );
+    };
+
+    setIsSyncing(true);
+    const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
+    let validatedUser = null;
+
+    // Sincronização em tempo real obrigatória
+    if (targetUrl) {
+      try {
+        const res = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`).then(r => r.ok ? r.json() : null);
+        if (Array.isArray(res) && res.length > 0) {
+          setSettings(prev => {
+            const updated = { ...prev, users: res };
+            localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
+            return updated;
+          });
+          validatedUser = findUserFromList(res);
+        } else {
+          // Se falhar a rede, tentamos cache local
+          validatedUser = findUserFromList(settings.users || []);
+        }
+      } catch (err) {
+        console.warn("Erro na sincronização obrigatória de login:", err);
+        validatedUser = findUserFromList(settings.users || []);
+      } finally {
+        setIsSyncing(false);
+      }
+    }
+
+    // Super user legacy check fallback
+    if (!validatedUser && cleanUsername === 'cavalieri' && loginPassword === 'tricolor') {
+      validatedUser = {
         id: 'master',
         username: 'cavalieri',
         name: 'Administrador Mestre',
         password: 'tricolor',
-        permissions: { checklist: true, reports: true, settings: true, admin: true }
+        permissions: { 
+          checklist: true, reports: true, settings: true, admin: true, canSign: true,
+          signAsChefeMotoristas: true, signAsCmtProntidao: true, signAsCmtPosto: true, signAsCmtSgb: true
+        }
       };
-      setCurrentUser(superUser);
-      setShowLoginModal(false);
-      setLoginUsername('');
-      setLoginPassword('');
-      return;
     }
 
-    if (user) {
-      setCurrentUser(user);
+    if (validatedUser) {
+      setCurrentUser(validatedUser);
       setShowLoginModal(false);
       setLoginUsername('');
       setLoginPassword('');
-      saveAuditLog('LOGIN', 'Usuário realizou login com sucesso');
+      saveAuditLog('LOGIN', `Usuário ${validatedUser.username} logado (Validação Remota)`);
     } else {
-      alert('Usuário ou senha inválidos');
+      alert('Usuário ou senha inválidos. Verifique suas credenciais e sua conexão.');
     }
   };
 
@@ -792,6 +858,80 @@ const App: React.FC = () => {
     }, 300);
   };
 
+  const handleSaveReportToDrive = async () => {
+    if (!googleToken) {
+      alert("Conecte sua conta Google primeiro nos ajustes.");
+      return;
+    }
+
+    if (data.items.some(item => item.status === 'PENDING')) {
+      alert("BLOQUEIO: Existem itens pendentes.");
+      return;
+    }
+
+    if (!data.prefix.trim() || !data.plate.trim() || !data.km.trim() || !data.signatureName?.trim()) {
+      alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios.");
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      // 1. Salvar log na planilha (Apps Script + Sheets Autenticado)
+      await saveLogToGoogleSheets();
+      await saveAuditLog('SAVE_REPORT_DRIVE', `Checklist ${data.checklistType} enviado para Google Drive (VTR: ${data.prefix})`);
+      
+      if (settings.googleSpreadsheetId) {
+        const logToAppend: LogEntry = {
+          ...data,
+          date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
+          signatureRank: data.signatureRank || 'CONFERENTE',
+          signatureName: data.signatureName || 'VISITANTE'
+        } as any;
+        await sheetsService.appendLog(googleToken, settings.googleSpreadsheetId, logToAppend);
+      }
+
+      // 2. Capturar e Gerar PDF
+      const element = checklistRef.current;
+      if (!element) throw new Error("Elemento do checklist não encontrado");
+
+      // Ocultar elementos que não devem sair no PDF (no-print)
+      const noPrintElements = element.querySelectorAll('.no-print');
+      const originalDisplays = Array.from(noPrintElements).map(el => (el as HTMLElement).style.display);
+      noPrintElements.forEach(el => (el as HTMLElement).style.display = 'none');
+
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff'
+      });
+
+      // Restaurar visibilidade
+      noPrintElements.forEach((el, i) => (el as HTMLElement).style.display = originalDisplays[i]);
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      
+      pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+      const pdfBlob = pdf.output('blob');
+      
+      const fileName = `Checklist_${data.prefix || 'VTR'}_${data.date.replace(/-/g, '')}_${new Date().getTime()}.pdf`;
+      
+      // 3. Enviar para o Drive
+      await driveService.uploadFile(googleToken, pdfBlob, fileName, 'application/pdf');
+      
+      alert(`Protocolo enviado com sucesso para o Google Drive!\nArquivo: ${fileName}`);
+      fetchDashboardData();
+    } catch (err) {
+      console.error("Erro na integração Drive:", err);
+      alert("Falha ao salvar no Google Drive. Verifique sua conexão e permissões.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const handleOnlySave = async () => {
     if (data.items.some(item => item.status === 'PENDING')) {
       alert("BLOQUEIO: Existem itens pendentes.");
@@ -851,10 +991,16 @@ const App: React.FC = () => {
               settings={settings} 
               currentUser={currentUser}
               onSave={handleSaveSettings} 
-              onClose={() => setView('checklist')} 
+              onClose={() => {
+                setView('checklist');
+                setReportPreFilterPrefix(undefined);
+                setReportPreFilterType(undefined);
+              }} 
               onExportModel={handleExportModel}
               onImportModel={handleImportModel}
-              initialTab={activeTabInSettings} 
+              initialTab={activeTabInSettings}
+              initialReportPrefix={reportPreFilterPrefix}
+              initialReportType={reportPreFilterType}
               setCurrentUser={setCurrentUser}
               googleUser={googleUser}
               onGoogleSignIn={handleGoogleSignIn}
@@ -871,6 +1017,11 @@ const App: React.FC = () => {
               onRefresh={fetchDashboardData}
               isLoading={isFetchingDashboardData}
               onUpdateVehicles={(updatedVehicles) => handleSaveSettings({ ...settings, vehicles: updatedVehicles })}
+              onSaveAuditLog={saveAuditLog}
+              onVehicleReportClick={(prefix) => {
+                setSelectedVehicleForReport(prefix);
+                setShowReportSelectionModal(true);
+              }}
             />
           ) : (
             <>
@@ -1145,6 +1296,17 @@ const App: React.FC = () => {
               <CheckCircle2 className="w-4 h-4" />
               <span>FINALIZAR</span>
             </button>
+
+            {googleToken && (
+               <button 
+                onClick={handleSaveReportToDrive} 
+                className="px-4 py-2 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all active:scale-95 bg-green-600 text-white hover:bg-green-700 shrink-0"
+                disabled={isSaving}
+              >
+                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cloud className="w-4 h-4" />}
+                <span>SALVAR NO DRIVE</span>
+              </button>
+            )}
             
             <div className="w-px h-6 bg-gray-200 mx-0.5"></div>
             
@@ -1241,11 +1403,81 @@ const App: React.FC = () => {
               </div>
               <button 
                 type="submit" 
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95 uppercase tracking-widest text-xs"
+                disabled={isSyncing}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95 uppercase tracking-widest text-xs disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                Confirmar Acesso
+                {isSyncing ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Validando...
+                  </>
+                ) : "Confirmar Acesso"}
               </button>
+              {isSyncing && (
+                <p className="text-[9px] text-center font-black text-blue-600 animate-pulse uppercase tracking-wider">
+                  Sincronizando com Banco de Dados...
+                </p>
+              )}
             </form>
+          </div>
+        </div>
+      )}
+
+      {showReportSelectionModal && selectedVehicleForReport && (
+        <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm space-y-6 border-t-4 border-blue-600 animate-in fade-in zoom-in duration-300">
+            <div className="text-center space-y-1">
+              <h2 className="text-xl font-black text-gray-900 uppercase tracking-tighter">Relatórios Viatura {selectedVehicleForReport}</h2>
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest text-blue-600">Selecione o relatório desejado</p>
+            </div>
+
+            <div className="space-y-3">
+              <button 
+                onClick={() => {
+                  const vehicle = settings.vehicles?.find(v => v.prefix === selectedVehicleForReport);
+                  const isMoto = vehicle?.type === 'MOTOCICLETA';
+                  setReportPreFilterPrefix(selectedVehicleForReport);
+                  setReportPreFilterType(isMoto ? 'daily_control_motos' : 'daily_control');
+                  setActiveTabInSettings('reports');
+                  setView('settings');
+                  setShowReportSelectionModal(false);
+                }}
+                className="w-full bg-gray-50 hover:bg-blue-50 text-gray-700 hover:text-blue-700 font-bold p-4 rounded-2xl border-2 border-transparent hover:border-blue-100 transition-all flex items-center gap-3 uppercase text-xs"
+              >
+                <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <span>Ficha de Controle Diário</span>
+              </button>
+
+              <button 
+                onClick={() => {
+                  const vehicle = settings.vehicles?.find(v => v.prefix === selectedVehicleForReport);
+                  let type: any = 'weekly_leves';
+                  if (vehicle?.type === 'MOTOCICLETA') type = 'weekly_motos';
+                  if (vehicle?.type === 'AB/AÉREA') type = 'weekly_ab';
+                  
+                  setReportPreFilterPrefix(selectedVehicleForReport);
+                  setReportPreFilterType(type);
+                  setActiveTabInSettings('reports');
+                  setView('settings');
+                  setShowReportSelectionModal(false);
+                }}
+                className="w-full bg-gray-50 hover:bg-indigo-50 text-gray-700 hover:text-indigo-700 font-bold p-4 rounded-2xl border-2 border-transparent hover:border-indigo-100 transition-all flex items-center gap-3 uppercase text-xs"
+              >
+                <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600">
+                  <Calendar className="w-4 h-4" />
+                </div>
+                <span>Ficha Mensal / Semanal</span>
+              </button>
+
+              <button 
+                onClick={() => setShowReportSelectionModal(false)}
+                className="w-full bg-white hover:bg-gray-50 text-gray-400 font-black py-3 rounded-2xl transition-all uppercase tracking-widest text-[10px]"
+              >
+                Cancelar
+              </button>
+            </div>
           </div>
         </div>
       )}

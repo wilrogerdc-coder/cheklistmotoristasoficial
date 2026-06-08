@@ -37,6 +37,8 @@ interface ReportsProps {
   onFetch: (prefix?: string, month?: string) => Promise<void>;
   isLoading?: boolean;
   onUpdateVehicles?: (vehicles: any[]) => void;
+  initialPrefix?: string;
+  initialReport?: ReportType;
 }
 
 type ReportType =
@@ -62,10 +64,19 @@ export const Reports: React.FC<ReportsProps> = ({
   currentUser,
   onFetch,
   isLoading,
-  onUpdateVehicles
+  onUpdateVehicles,
+  initialPrefix,
+  initialReport
 }) => {
-  const [activeReport, setActiveReport] = useState<ReportType>(null);
-  const [monthFilter, setMonthFilter] = useState<string>(""); // Vazio por padrão para mostrar tudo
+  const [activeReport, setActiveReport] = useState<ReportType>(initialReport || null);
+  const [monthFilter, setMonthFilter] = useState<string>(() => {
+    // Se inicializado com prefixo, default para mês atual
+    if (initialPrefix) {
+      const now = new Date();
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    }
+    return "";
+  });
   const [monthClosures, setMonthClosures] = useState<any[]>([]);
   const [isClosingMonth, setIsClosingMonth] = useState(false);
   const [showClosureModal, setShowClosureModal] = useState(false);
@@ -182,7 +193,7 @@ export const Reports: React.FC<ReportsProps> = ({
 
     try {
       const usersResp = await fetch(
-        `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}action=getUsers`,
+        `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}action=getUsers&_t=${Date.now()}`,
       );
       const users = await usersResp.json();
       const user = users.find(
@@ -292,7 +303,7 @@ export const Reports: React.FC<ReportsProps> = ({
 
     setIsSigning(true);
     try {
-      const usersResp = await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=getUsers`);
+      const usersResp = await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`);
       const users = await usersResp.json();
       const user = users.find((u: any) => 
         u.username.toLowerCase() === justificationAuth.username.toLowerCase() && 
@@ -388,7 +399,7 @@ export const Reports: React.FC<ReportsProps> = ({
   };
 
   const [selectedPrefixes, setSelectedPrefixes] = useState<Set<string>>(
-    new Set(),
+    initialPrefix ? new Set([initialPrefix]) : new Set(),
   );
   const [prefixSearch, setPrefixSearch] = useState<string>("");
   const [postoFilter, setPostoFilter] = useState<string>("");
@@ -529,7 +540,7 @@ export const Reports: React.FC<ReportsProps> = ({
     try {
       // Validar usuário
       const usersResp = await fetch(
-        `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}action=getUsers`,
+        `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}action=getUsers&_t=${Date.now()}`,
       );
       const users = await usersResp.json();
       const user = users.find(
@@ -1135,8 +1146,13 @@ export const Reports: React.FC<ReportsProps> = ({
     const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
     const getDayColor = (d: number) => {
+      const refDate = new Date(2026, 0, 1);
+      const curDate = new Date(year, month - 1, d);
+      const diffDays = Math.round((curDate.getTime() - refDate.getTime()) / (1000 * 60 * 60 * 24));
+      let idx = diffDays % 3;
+      if (idx < 0) idx += 3;
       const colors = ["bg-[#4ade80]", "bg-[#facc15]", "bg-[#60a5fa]"];
-      return colors[(d - 1) % 3];
+      return colors[idx];
     };
 
     const targetLogs = logs.filter((log) => {
@@ -1938,8 +1954,13 @@ export const Reports: React.FC<ReportsProps> = ({
     const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
     const getDayColor = (d: number) => {
+      const refDate = new Date(2026, 0, 1);
+      const curDate = new Date(year, month - 1, d);
+      const diffDays = Math.round((curDate.getTime() - refDate.getTime()) / (1000 * 60 * 60 * 24));
+      let idx = diffDays % 3;
+      if (idx < 0) idx += 3;
       const colors = ["bg-[#4ade80]", "bg-[#facc15]", "bg-[#60a5fa]"];
-      return colors[(d - 1) % 3];
+      return colors[idx];
     };
 
     const targetLogs = logs.filter((log) => {
@@ -4396,6 +4417,18 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
 
             <div className="flex gap-2">
+              <button
+                onClick={() => setShowJustificationModal(true)}
+                className="bg-purple-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 shadow-lg hover:bg-purple-700 transition-all"
+              >
+                <AlertCircle className="w-4 h-4" /> Justificar Dia
+              </button>
+              <button
+                onClick={() => setShowClosureModal(true)}
+                className="bg-blue-900 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 shadow-lg hover:bg-black transition-all"
+              >
+                <Lock className="w-4 h-4" /> Fechamento Mensal
+              </button>
             </div>
           </div>
         </div>

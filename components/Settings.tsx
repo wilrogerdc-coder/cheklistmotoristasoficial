@@ -80,6 +80,12 @@ interface AuditUser {
     signAsCmtProntidao?: boolean;
     signAsCmtPosto?: boolean;
     signAsCmtSgb?: boolean;
+    manageStations?: boolean;
+    manageVehicles?: boolean;
+    manageUsers?: boolean;
+    manageReports?: boolean;
+    completeMaintenance?: boolean;
+    deleteMaintenance?: boolean;
   };
   createdAt?: string;
 }
@@ -92,6 +98,8 @@ interface SettingsProps {
   onExportModel: () => void;
   onImportModel: (e: React.ChangeEvent<HTMLInputElement>) => void;
   initialTab?: 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login';
+  initialReportPrefix?: string;
+  initialReportType?: any;
   setCurrentUser: (user: User | null) => void;
   googleUser: any;
   onGoogleSignIn: () => void;
@@ -109,6 +117,8 @@ export const Settings: React.FC<SettingsProps> = ({
   onExportModel,
   onImportModel,
   initialTab = 'items',
+  initialReportPrefix,
+  initialReportType,
   setCurrentUser,
   googleUser,
   onGoogleSignIn,
@@ -119,6 +129,7 @@ export const Settings: React.FC<SettingsProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login'>(initialTab);
   const [isSettingsUnlocked, setIsSettingsUnlocked] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
   const [unlockUsername, setUnlockUsername] = useState('');
   const [unlockPassword, setUnlockPassword] = useState('');
 
@@ -147,19 +158,31 @@ export const Settings: React.FC<SettingsProps> = ({
       if (currentUser.username.toLowerCase() === 'cavalieri') return true;
       
       const tabPermissionMap: Record<string, string> = {
-        stations: 'settings',
-        vehicles: 'settings',
-        users: 'settings',
+        stations: 'manageStations',
+        vehicles: 'manageVehicles',
+        users: 'manageUsers',
+        reports: 'manageReports',
+        report_editor: 'manageReports',
         items: 'settings',
         images: 'settings',
         style: 'settings',
         admin: 'admin',
-        report_editor: 'reports',
-        reports: 'reports',
       };
+      
       const perm = tabPermissionMap[tabId];
       if (perm) {
-        return !!(currentUser.permissions as any)[perm];
+        const hasSpecific = !!(currentUser.permissions as any)[perm];
+        if (hasSpecific) return true;
+        
+        // Fallback para permissões mestre legadas
+        if (['stations', 'vehicles', 'users', 'items', 'images', 'style'].includes(tabId)) {
+          return !!(currentUser.permissions as any).settings;
+        }
+        if (['reports', 'report_editor'].includes(tabId)) {
+          return !!(currentUser.permissions as any).reports;
+        }
+        
+        return false;
       }
       return true;
     }
@@ -168,24 +191,51 @@ export const Settings: React.FC<SettingsProps> = ({
     if (currentUser) {
       if (currentUser.username.toLowerCase() === 'cavalieri') return true;
       const tabPermissionMap: Record<string, string> = {
-        stations: 'settings',
-        vehicles: 'settings',
-        users: 'settings',
+        stations: 'manageStations',
+        vehicles: 'manageVehicles',
+        users: 'manageUsers',
+        reports: 'manageReports',
+        report_editor: 'manageReports',
         items: 'settings',
         images: 'settings',
         style: 'settings',
         admin: 'admin',
-        report_editor: 'reports',
-        reports: 'reports',
       };
       const perm = tabPermissionMap[tabId];
       if (perm) {
-        return !!(currentUser.permissions as any)[perm];
+        const hasSpecific = !!(currentUser.permissions as any)[perm];
+        if (hasSpecific) return true;
+        
+        if (['stations', 'vehicles', 'users', 'items', 'images', 'style'].includes(tabId)) {
+          return !!(currentUser.permissions as any).settings;
+        }
+        if (['reports', 'report_editor'].includes(tabId)) {
+          return !!(currentUser.permissions as any).reports;
+        }
+        
+        return false;
       }
     }
 
     return false;
   };
+
+  useEffect(() => {
+    if (activeTab === 'login' || !isSettingsUnlocked) {
+      const rawUrl = localSettings.googleSheetUrl || settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+      const targetUrl = rawUrl?.trim();
+      if (targetUrl) {
+        fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(res => {
+            if (Array.isArray(res) && res.length > 0) {
+              setLocalSettings(prev => ({ ...prev, users: res }));
+            }
+          })
+          .catch(err => console.warn("Erro ao sincronizar usuários na tela de login/ajustes:", err));
+      }
+    }
+  }, [activeTab, isSettingsUnlocked]);
 
   useEffect(() => {
     if (currentUser && (currentUser.permissions?.settings || currentUser.username.toLowerCase() === 'cavalieri')) {
@@ -234,6 +284,7 @@ export const Settings: React.FC<SettingsProps> = ({
   });
   const [editingVehicleId, setEditingVehicleId] = useState<string | null>(null);
   const [newStation, setNewStation] = useState({ name: '', sgbId: '' });
+  const [editingStationId, setEditingStationId] = useState<string | null>(null);
   const [newSGB, setNewSGB] = useState({ name: '', gbId: '' });
   const [newGB, setNewGB] = useState({ name: '' });
   const [itemsFilter, setItemsFilter] = useState<'all' | 'LEVE/PESADA' | 'MOTOCICLETA' | 'AB/AÉREA'>('all');
@@ -316,13 +367,41 @@ export const Settings: React.FC<SettingsProps> = ({
       signAsChefeMotoristas: false,
       signAsCmtProntidao: false,
       signAsCmtPosto: false,
-      signAsCmtSgb: false
+      signAsCmtSgb: false,
+      manageStations: false,
+      manageVehicles: false,
+      manageUsers: false,
+      manageReports: false,
+      completeMaintenance: false,
+      deleteMaintenance: false
     } 
   });
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [isAddingLocalUser, setIsAddingLocalUser] = useState(false);
   const [editingLocalUser, setEditingLocalUser] = useState<User | null>(null);
-  const [localUserForm, setLocalUserForm] = useState({ username: '', password: '', name: '', rank: '' });
+  const [localUserForm, setLocalUserForm] = useState({ 
+    username: '', 
+    password: '', 
+    name: '', 
+    rank: '',
+    permissions: {
+      checklist: true,
+      reports: false,
+      settings: false,
+      admin: false,
+      canSign: false,
+      signAsChefeMotoristas: false,
+      signAsCmtProntidao: false,
+      signAsCmtPosto: false,
+      signAsCmtSgb: false,
+      manageStations: false,
+      manageVehicles: false,
+      manageUsers: false,
+      manageReports: false,
+      completeMaintenance: false,
+      deleteMaintenance: false
+    }
+  });
   
   const printMirrorRef = useRef<HTMLDivElement>(null);
 
@@ -447,10 +526,12 @@ export const Settings: React.FC<SettingsProps> = ({
 
     // Sincronização em tempo real no momento do login para garantir novos usuários
     try {
-      const response = await fetch(`${targetUrl}?action=getUsers`);
+      const response = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`);
+      if (!response.ok) throw new Error("Falha na conexão com o servidor");
       const updatedUsers = await response.json();
       if (Array.isArray(updatedUsers)) {
         setUsersList(updatedUsers);
+        setLocalSettings(prev => ({ ...prev, users: updatedUsers }));
         
         const match = updatedUsers.find((u: any) => 
           u && u.username && u.username.toString().toLowerCase() === loginUsername.toLowerCase() && 
@@ -548,6 +629,12 @@ export const Settings: React.FC<SettingsProps> = ({
         signAsCmtProntidao: user.permissions?.signAsCmtProntidao ?? false,
         signAsCmtPosto: user.permissions?.signAsCmtPosto ?? false,
         signAsCmtSgb: user.permissions?.signAsCmtSgb ?? false,
+        manageStations: user.permissions?.manageStations ?? false,
+        manageVehicles: user.permissions?.manageVehicles ?? false,
+        manageUsers: user.permissions?.manageUsers ?? false,
+        manageReports: user.permissions?.manageReports ?? false,
+        completeMaintenance: user.permissions?.completeMaintenance ?? false,
+        deleteMaintenance: user.permissions?.deleteMaintenance ?? false,
       }
     });
     setEditingUserId(user.id || user.username);
@@ -568,7 +655,13 @@ export const Settings: React.FC<SettingsProps> = ({
         signAsChefeMotoristas: false,
         signAsCmtProntidao: false,
         signAsCmtPosto: false,
-        signAsCmtSgb: false
+        signAsCmtSgb: false,
+        manageStations: false,
+        manageVehicles: false,
+        manageUsers: false,
+        manageReports: false,
+        completeMaintenance: false,
+        deleteMaintenance: false
       } 
     });
     setEditingUserId(null);
@@ -761,9 +854,30 @@ export const Settings: React.FC<SettingsProps> = ({
 
   const handleAddStation = () => {
     if (!newStation.name.trim() || !newStation.sgbId) return;
-    const station = { id: crypto.randomUUID(), ...newStation };
-    setLocalSettings({ ...localSettings, stations: [...(localSettings.stations || []), station] });
+    
+    if (editingStationId) {
+      setLocalSettings({
+        ...localSettings,
+        stations: (localSettings.stations || []).map(s => 
+          s.id === editingStationId ? { ...s, name: newStation.name.toUpperCase(), sgbId: newStation.sgbId } : s
+        )
+      });
+      setEditingStationId(null);
+    } else {
+      const station = { id: crypto.randomUUID(), name: newStation.name.toUpperCase(), sgbId: newStation.sgbId };
+      setLocalSettings({ ...localSettings, stations: [...(localSettings.stations || []), station] });
+    }
     setNewStation({ name: '', sgbId: '' });
+  };
+
+  const handleStartEditStation = (s: any) => {
+    setNewStation({ name: s.name, sgbId: s.sgbId });
+    setEditingStationId(s.id);
+  };
+
+  const handleCancelEditStation = () => {
+    setNewStation({ name: '', sgbId: '' });
+    setEditingStationId(null);
   };
 
   const handleRemoveStation = (id: string) => {
@@ -849,27 +963,40 @@ export const Settings: React.FC<SettingsProps> = ({
     
     const newUser: User = {
       id: crypto.randomUUID(),
-      username: localUserForm.username.toLowerCase(),
+      username: localUserForm.username.toLowerCase().trim(),
       password: localUserForm.password,
       name: localUserForm.name || localUserForm.username,
-      permissions: {
-        checklist: true,
-        reports: true,
-        settings: false, // Por padrão, novos usuários não têm acesso aos ajustes
-        admin: false,
-        canSign: false,
-        signAsChefeMotoristas: false,
-        signAsCmtProntidao: false,
-        signAsCmtPosto: false,
-        signAsCmtSgb: false
-      }
+      rank: localUserForm.rank,
+      permissions: { ...localUserForm.permissions }
     };
     
     setLocalSettings({
       ...localSettings,
       users: [...(localSettings.users || []), newUser]
     });
-    setLocalUserForm({ username: '', password: '', name: '', rank: '' });
+    setLocalUserForm({ 
+      username: '', 
+      password: '', 
+      name: '', 
+      rank: '', 
+      permissions: {
+        checklist: true,
+        reports: false,
+        settings: false,
+        admin: false,
+        canSign: false,
+        signAsChefeMotoristas: false,
+        signAsCmtProntidao: false,
+        signAsCmtPosto: false,
+        signAsCmtSgb: false,
+        manageStations: false,
+        manageVehicles: false,
+        manageUsers: false,
+        manageReports: false,
+        completeMaintenance: false,
+        deleteMaintenance: false
+      }
+    });
     setIsAddingLocalUser(false);
     alert('Usuário cadastrado com sucesso! Lembre-se de clicar em "Aplicar Ajustes" para salvar permanentemente.');
   };
@@ -884,10 +1011,11 @@ export const Settings: React.FC<SettingsProps> = ({
       if (u.id === editingLocalUser.id) {
         return {
           ...u,
-          username: localUserForm.username.toLowerCase(),
+          username: localUserForm.username.toLowerCase().trim(),
           password: localUserForm.password,
           name: localUserForm.name || localUserForm.username,
-          rank: localUserForm.rank
+          rank: localUserForm.rank,
+          permissions: { ...localUserForm.permissions }
         };
       }
       return u;
@@ -895,7 +1023,29 @@ export const Settings: React.FC<SettingsProps> = ({
 
     setLocalSettings({ ...localSettings, users: updatedUsers });
     setEditingLocalUser(null);
-    setLocalUserForm({ username: '', password: '', name: '', rank: '' });
+    setLocalUserForm({ 
+      username: '', 
+      password: '', 
+      name: '', 
+      rank: '',
+      permissions: {
+        checklist: true,
+        reports: false,
+        settings: false,
+        admin: false,
+        canSign: false,
+        signAsChefeMotoristas: false,
+        signAsCmtProntidao: false,
+        signAsCmtPosto: false,
+        signAsCmtSgb: false,
+        manageStations: false,
+        manageVehicles: false,
+        manageUsers: false,
+        manageReports: false,
+        completeMaintenance: false,
+        deleteMaintenance: false
+      }
+    });
     alert('Dados do usuário atualizados com sucesso!');
   };
 
@@ -905,7 +1055,24 @@ export const Settings: React.FC<SettingsProps> = ({
       username: u.username,
       password: u.password || '',
       name: u.name,
-      rank: u.rank || ''
+      rank: u.rank || '',
+      permissions: {
+        checklist: u.permissions?.checklist ?? true,
+        reports: u.permissions?.reports ?? false,
+        settings: u.permissions?.settings ?? false,
+        admin: u.permissions?.admin ?? false,
+        canSign: u.permissions?.canSign ?? false,
+        signAsChefeMotoristas: u.permissions?.signAsChefeMotoristas ?? false,
+        signAsCmtProntidao: u.permissions?.signAsCmtProntidao ?? false,
+        signAsCmtPosto: u.permissions?.signAsCmtPosto ?? false,
+        signAsCmtSgb: u.permissions?.signAsCmtSgb ?? false,
+        manageStations: u.permissions?.manageStations ?? false,
+        manageVehicles: u.permissions?.manageVehicles ?? false,
+        manageUsers: u.permissions?.manageUsers ?? false,
+        manageReports: u.permissions?.manageReports ?? false,
+        completeMaintenance: u.permissions?.completeMaintenance ?? false,
+        deleteMaintenance: u.permissions?.deleteMaintenance ?? false,
+      }
     });
     setIsAddingLocalUser(true); // Re-use the same form area
   };
@@ -925,21 +1092,44 @@ export const Settings: React.FC<SettingsProps> = ({
     }
   };
 
-  const handleSettingsUnlock = (e: React.FormEvent) => {
+  const handleSettingsUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsVerifying(true);
     
+    const findUser = (userList: User[]) => {
+      return userList.find(u => 
+        u.username.toLowerCase() === unlockUsername.toLowerCase() && 
+        u.password === unlockPassword &&
+        (u.permissions.settings === true || u.username.toLowerCase() === 'cavalieri')
+      );
+    };
+
     // Suporte ao usuário mestre legacy/emergência
     if (unlockUsername.toLowerCase() === 'cavalieri' && (unlockPassword === (localSettings.settingsPassword || 'cavalieri') || unlockPassword === 'tricolor')) {
       setIsSettingsUnlocked(true);
       setActiveTab('stations');
+      setIsVerifying(false);
       return;
     }
 
-    const matchedUser = (localSettings.users || []).find(u => 
-      u.username.toLowerCase() === unlockUsername.toLowerCase() && 
-      u.password === unlockPassword &&
-      (u.permissions.settings === true || u.username.toLowerCase() === 'cavalieri')
-    );
+    // Sincronização obrigatória antes da validação
+    const rawUrl = localSettings.googleSheetUrl || settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+    const targetUrl = rawUrl?.trim();
+    let currentUsers = localSettings.users || [];
+
+    if (targetUrl) {
+      try {
+        const res = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`).then(r => r.ok ? r.json() : null);
+        if (Array.isArray(res) && res.length > 0) {
+          setLocalSettings(prev => ({ ...prev, users: res }));
+          currentUsers = res;
+        }
+      } catch (err) {
+        console.warn("Falha na sincronização obrigatória durante unlock:", err);
+      }
+    }
+
+    const matchedUser = findUser(currentUsers);
 
     if (matchedUser) {
       setIsSettingsUnlocked(true);
@@ -954,6 +1144,7 @@ export const Settings: React.FC<SettingsProps> = ({
     } else {
       alert('Acesso Negado: Usuário sem permissão de ajustes ou credenciais incorretas.');
     }
+    setIsVerifying(false);
   };
 
   return (
@@ -1391,20 +1582,32 @@ export const Settings: React.FC<SettingsProps> = ({
                   })}
                 </select>
                 <input type="text" placeholder="Nome do Posto (Ex: PB Central)" value={newStation.name} onChange={e => setNewStation({...newStation, name: e.target.value.toUpperCase()})} className="md:col-span-1 border rounded-xl px-4 py-2 text-xs font-bold" />
-                <button onClick={handleAddStation} className="bg-blue-600 text-white p-2 rounded-xl hover:bg-blue-700 transition-all flex justify-center items-center"><Plus className="w-6 h-6" /></button>
+                <div className="flex gap-1">
+                  <button onClick={handleAddStation} className={`${editingStationId ? 'bg-green-600' : 'bg-blue-600'} text-white p-2 rounded-xl transition-all flex-1 flex justify-center items-center shadow-md`}>
+                    {editingStationId ? <Save className="w-5 h-5" /> : <Plus className="w-6 h-6" />}
+                  </button>
+                  {editingStationId && (
+                    <button onClick={handleCancelEditStation} className="bg-gray-200 text-gray-600 px-3 rounded-xl hover:bg-gray-300 transition-all text-[10px] font-black uppercase">Sair</button>
+                  )}
+                </div>
               </div>
               <div className="max-h-[300px] overflow-y-auto divide-y border rounded-2xl">
                 {(localSettings.stations || []).length === 0 && <p className="p-10 text-center text-xs text-gray-400 font-bold uppercase">Nenhum posto cadastrado</p>}
-                {(localSettings.stations || []).map((s) => {
+                {[...(localSettings.stations || [])]
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((s) => {
                   const sgb = localSettings.sgbs?.find(sg => sg.id === s.sgbId);
                   const gb = localSettings.gbs?.find(g => g.id === sgb?.gbId);
                   return (
-                    <div key={s.id} className="p-3 flex items-center justify-between hover:bg-gray-50">
+                    <div key={s.id} className="p-3 flex items-center justify-between hover:bg-gray-50 group">
                       <div className="flex flex-col">
                         <span className="text-[11px] font-black text-gray-800 uppercase">{s.name}</span>
                         <span className="text-[9px] font-bold text-gray-400 uppercase">{gb?.name} / {sgb?.name}</span>
                       </div>
-                      <button onClick={() => handleRemoveStation(s.id)} className="text-red-400 hover:text-red-600 p-2"><Trash2 className="w-4 h-4" /></button>
+                      <div className="flex gap-1">
+                        <button onClick={() => handleStartEditStation(s)} className="text-blue-400 hover:text-blue-600 p-2 opacity-0 group-hover:opacity-100 transition-all"><Edit2 className="w-4 h-4" /></button>
+                        <button onClick={() => handleRemoveStation(s.id)} className="text-red-400 hover:text-red-600 p-2 opacity-0 group-hover:opacity-100 transition-all"><Trash2 className="w-4 h-4" /></button>
+                      </div>
                     </div>
                   );
                 })}
@@ -1597,12 +1800,146 @@ export const Settings: React.FC<SettingsProps> = ({
                     <input 
                       type="text" 
                       value={localUserForm.rank} 
-                      onChange={e => setLocalUserForm({...localUserForm, rank: e.target.value})} 
+                      onChange={e => setLocalUserForm({...localUserForm, rank: e.target.value.toUpperCase()})} 
                       placeholder="Ex: Cb PM 123456" 
                       className="w-full bg-white border rounded-2xl p-3 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" 
                     />
                   </div>
                 </div>
+
+                <div className="space-y-4 border-t pt-4">
+                  <h5 className="text-[10px] font-black text-blue-600 uppercase flex items-center gap-1 tracking-widest">
+                    <ShieldCheck className="w-3.5 h-3.5" /> Definição de Permissões
+                  </h5>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <label className="flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer hover:bg-white/80 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.checklist} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, checklist: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-gray-600">Checklist</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer hover:bg-white/80 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.reports} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, reports: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-gray-600">Relatórios</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer hover:bg-white/80 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.settings} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, settings: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-gray-600">Ajustes</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer hover:bg-white/80 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.admin} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, admin: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-gray-600">Auditoria</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border border-blue-100 rounded-xl cursor-pointer hover:bg-blue-50 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.manageStations} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, manageStations: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-blue-600">Postos</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border border-blue-100 rounded-xl cursor-pointer hover:bg-blue-50 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.manageVehicles} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, manageVehicles: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-blue-600">Viaturas</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border border-blue-100 rounded-xl cursor-pointer hover:bg-blue-50 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.manageUsers} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, manageUsers: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-blue-600">Usuários</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border border-blue-100 rounded-xl cursor-pointer hover:bg-blue-50 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.manageReports} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, manageReports: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-blue-600">Relatórios</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border border-green-100 rounded-xl cursor-pointer hover:bg-green-50 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.completeMaintenance} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, completeMaintenance: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-green-600">Concluir Manutenção</span>
+                    </label>
+                    <label className="flex items-center gap-2 p-3 bg-white border border-red-100 rounded-xl cursor-pointer hover:bg-red-50 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.permissions.deleteMaintenance} 
+                        onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, deleteMaintenance: e.target.checked}})} 
+                        className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-red-600">Excluir Alertas</span>
+                    </label>
+                  </div>
+
+                  <div className="space-y-3 pt-2">
+                    <h6 className="text-[9px] font-black text-amber-600 uppercase flex items-center gap-1">
+                      <Lock className="w-3 h-3" /> Funções de Assinatura
+                    </h6>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                       <label className="flex items-center gap-2 p-3 bg-amber-50/50 border border-amber-100 rounded-xl cursor-pointer hover:bg-amber-100/50 transition-colors">
+                        <input 
+                          type="checkbox" 
+                          checked={localUserForm.permissions.canSign} 
+                          onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, canSign: e.target.checked}})} 
+                          className="w-4 h-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500" 
+                        />
+                        <span className="text-[10px] font-black uppercase text-amber-900">Permitir Assinar Documentos</span>
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          { id: 'signAsChefeMotoristas', label: 'Ch. Motoristas' },
+                          { id: 'signAsCmtProntidao', label: 'CMT Prontidão' },
+                          { id: 'signAsCmtPosto', label: 'CMT Posto' },
+                          { id: 'signAsCmtSgb', label: 'CMT SGB' }
+                        ].map(sig => (
+                          <label key={sig.id} className="flex items-center gap-2 p-2 bg-white border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                            <input 
+                              type="checkbox" 
+                              checked={(localUserForm.permissions as any)[sig.id]} 
+                              onChange={e => setLocalUserForm({...localUserForm, permissions: {...localUserForm.permissions, [sig.id]: e.target.checked}})} 
+                              className="w-4 h-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500" 
+                            />
+                            <span className="text-[9px] font-black uppercase text-amber-700">{sig.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="flex justify-end pt-2">
                   <button 
                     onClick={editingLocalUser ? handleUpdateLocalUser : handleAddUser} 
@@ -1635,6 +1972,12 @@ export const Settings: React.FC<SettingsProps> = ({
                       { id: 'reports', label: 'Relatórios', icon: FileSearch },
                       { id: 'settings', label: 'Ajustes', icon: ShieldCheck },
                       { id: 'admin', label: 'Auditoria', icon: Lock },
+                      { id: 'manageStations', label: 'Postos', icon: Navigation },
+                      { id: 'manageVehicles', label: 'Viaturas', icon: Car },
+                      { id: 'manageUsers', label: 'Usuários', icon: Users },
+                      { id: 'manageReports', label: 'Relatórios', icon: FileSearch },
+                      { id: 'completeMaintenance', label: 'Concluir Manut.', icon: CheckCircle },
+                      { id: 'deleteMaintenance', label: 'Excluir Alerta', icon: Trash2 },
                       { id: 'canSign', label: 'Assinar Doc', icon: ShieldCheck },
                       { id: 'signAsChefeMotoristas', label: 'Ch. Motoristas', icon: UserCheck },
                       { id: 'signAsCmtProntidao', label: 'CMT Prontidão', icon: UserCheck },
@@ -2491,6 +2834,8 @@ export const Settings: React.FC<SettingsProps> = ({
               onFetch={fetchLogs}
               isLoading={isLoadingLogs}
               onUpdateVehicles={(updated) => onSave({ ...localSettings, vehicles: updated })}
+              initialPrefix={initialReportPrefix}
+              initialReport={initialReportType}
             />
           </ErrorBoundary>
         )}
@@ -2580,7 +2925,23 @@ export const Settings: React.FC<SettingsProps> = ({
                   className="w-full border-2 rounded-2xl p-4 text-center font-black tracking-[4px] focus:border-red-500 outline-none transition-all"
                 />
               </div>
-              <button type="submit" className="bg-red-600 hover:bg-red-700 text-white font-black py-4 rounded-2xl shadow-lg transition-all uppercase tracking-widest text-xs mt-2">Entrar nos Ajustes</button>
+              <button 
+                type="submit" 
+                disabled={isVerifying}
+                className="bg-red-600 hover:bg-red-700 text-white font-black py-4 rounded-2xl shadow-lg transition-all uppercase tracking-widest text-xs mt-2 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isVerifying ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Validando...
+                  </>
+                ) : "Entrar nos Ajustes"}
+              </button>
+              {isVerifying && (
+                <p className="text-[9px] text-center font-black text-red-600 animate-pulse uppercase tracking-wider">
+                  Consultando Banco de Dados Cloud...
+                </p>
+              )}
             </form>
           </div>
         )}

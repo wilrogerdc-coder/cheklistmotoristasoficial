@@ -1,7 +1,10 @@
 {
-  "name": "Remix: CheckViatura Pro - Auditoria e Gestão atualização",
+  "name": "Remix: CheckViatura Pro - Prompt Mestre",
   "description": "Sistema avançado de checklist de viaturas com sincronização em tempo real com Google Sheets, portal de auditoria e relatórios analíticos.",
   "requestFramePermissions": [
     "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

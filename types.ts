@@ -33,6 +33,8 @@ export interface MaintenanceAlert {
   warnDaysBefore?: number;
   status: 'ACTIVE' | 'DONE';
   createdAt: string;
+  completedAt?: string;
+  completedBy?: string;
 }
 
 export interface Vehicle {
@@ -94,6 +96,12 @@ export interface UserPermissions {
   signAsCmtProntidao?: boolean;
   signAsCmtPosto?: boolean;
   signAsCmtSgb?: boolean;
+  manageStations?: boolean;
+  manageVehicles?: boolean;
+  manageUsers?: boolean;
+  manageReports?: boolean;
+  completeMaintenance?: boolean;
+  deleteMaintenance?: boolean;
 }
 
 export interface User {

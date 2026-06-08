@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
-import { LogEntry, AppSettings, Justification, Vehicle, MaintenanceAlert } from "../types";
+import { LogEntry, AppSettings, Justification, Vehicle, MaintenanceAlert, User } from "../types";
+import { FIXED_GOOGLE_SHEET_URL } from "../constants";
 import { 
   Shield, 
   MapPin, 
@@ -30,6 +31,8 @@ interface FleetDashboardProps {
   onRefresh: () => void;
   isLoading?: boolean;
   onUpdateVehicles?: (updatedVehicles: Vehicle[]) => void;
+  onVehicleReportClick?: (prefix: string) => void;
+  onSaveAuditLog?: (action: string, details: string) => void;
 }
 
 export const FleetDashboard: React.FC<FleetDashboardProps> = ({
@@ -38,12 +41,18 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
   justifications,
   onRefresh,
   isLoading,
-  onUpdateVehicles
+  onUpdateVehicles,
+  onVehicleReportClick,
+  onSaveAuditLog
 }) => {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [filterType, setFilterType] = useState<'ALL' | 'OK' | 'PENDENTE' | 'JUSTIFICATION' | 'CN'>('ALL');
   const [stationFilter, setStationFilter] = useState<string>('ALL');
   const [selectedVehicleForAlerts, setSelectedVehicleForAlerts] = useState<Vehicle | null>(null);
+  const [secureAction, setSecureAction] = useState<{ type: 'COMPLETE' | 'DELETE', alertId: string } | null>(null);
+  const [authData, setAuthData] = useState({ username: '', password: '' });
+  const [authError, setAuthError] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
   
   // Alert creation state
   const [newAlert, setNewAlert] = useState<Partial<MaintenanceAlert>>({
@@ -54,6 +63,29 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
 
   // Helpers
   const normalizeText = (text: string) => String(text || "").trim().toUpperCase().replace(/[-\s]/g, "");
+
+  const getAlertStatus = (alert: MaintenanceAlert, currentKm: number) => {
+    if (alert.status !== 'ACTIVE') return 'none';
+
+    if (alert.type === 'KM' && alert.targetKm) {
+      if (currentKm >= alert.targetKm) return 'critical';
+      if (currentKm > 0 && (alert.targetKm - currentKm) <= (alert.warnKmBefore || 0)) return 'warning';
+    }
+
+    if (alert.type === 'DATE' && alert.targetDate) {
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      const target = new Date(alert.targetDate);
+      target.setHours(0,0,0,0);
+
+      if (today.getTime() >= target.getTime()) return 'critical';
+
+      const diffDays = Math.ceil((target.getTime() - today.getTime()) / (1000 * 3600 * 24));
+      if (diffDays <= (alert.warnDaysBefore || 0)) return 'warning';
+    }
+
+    return 'none';
+  };
   
   const today = useMemo(() => {
     const d = new Date();
@@ -135,6 +167,14 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
 
       const statusToday = !!logToday ? "CONFERIDA" : "PENDENTE";
 
+      const vehicleAlerts = (v.alerts || []).map(a => ({
+        ...a,
+        level: getAlertStatus(a, currentKm)
+      })).filter(a => a.level !== 'none');
+
+      const isCritical = vehicleAlerts.some(a => a.level === 'critical');
+      const isWarning = vehicleAlerts.some(a => a.level === 'warning');
+
       // Station filter logic
       if (stationFilter !== 'ALL' && v.station !== stationFilter) return;
 
@@ -144,19 +184,6 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
       if (filterType === 'PENDENTE' && statusToday !== 'PENDENTE') return;
       if (filterType === 'JUSTIFICATION' && pendingDays === 0) return;
 
-      const activeAlerts = v.alerts?.filter(a => {
-        if (a.status !== 'ACTIVE') return false;
-        if (a.type === 'KM' && a.targetKm && currentKm > 0) {
-          return (a.targetKm - currentKm) <= (a.warnKmBefore || 0);
-        }
-        if (a.type === 'DATE' && a.targetDate) {
-           const target = new Date(a.targetDate);
-           const diff = (target.getTime() - new Date().getTime()) / (1000 * 3600 * 24);
-           return diff <= (a.warnDaysBefore || 0);
-        }
-        return false;
-      }) || [];
-
       stationMap[stationKey].vehicles.push({
         ...v,
         logToday,
@@ -164,13 +191,44 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
         currentKm,
         statusToday,
         hasNovelty,
-        activeAlertsCount: activeAlerts.length,
-        hasAlerts: activeAlerts.length > 0
+        activeAlerts: vehicleAlerts,
+        activeAlertsCount: vehicleAlerts.length,
+        hasAlerts: vehicleAlerts.length > 0,
+        isCritical,
+        isWarning
       });
     });
 
     return Object.values(stationMap).filter(s => s.vehicles.length > 0).sort((a, b) => a.name.localeCompare(b.name));
   }, [logs, settings, justifications, today, filterType, stationFilter]);
+
+  const criticalAlertsSummary = useMemo(() => {
+    const alertsList: { vehiclePrefix: string, alert: MaintenanceAlert, level: 'warning' | 'critical' }[] = [];
+    
+    settings.vehicles?.forEach(v => {
+      const vehiclePrefix = normalizeText(v.prefix);
+      
+      // Encontrar o KM mais recente para esta viatura (mesmo que não seja de hoje)
+      const vehicleLogs = logs.filter(l => normalizeText(l.prefix) === vehiclePrefix).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const currentKm = vehicleLogs.length > 0 ? parseInt(vehicleLogs[0].km) : 0;
+      
+      const vAlerts = (v.alerts || [])
+        .map(a => ({
+          alert: a,
+          level: getAlertStatus(a, currentKm)
+        }))
+        .filter(a => a.level !== 'none') as { alert: MaintenanceAlert, level: 'warning' | 'critical' }[];
+      
+      vAlerts.forEach(va => {
+        alertsList.push({ vehiclePrefix: v.prefix, ...va });
+      });
+    });
+    
+    return alertsList.sort((a, b) => {
+      if (a.level === b.level) return 0;
+      return a.level === 'critical' ? -1 : 1;
+    });
+  }, [settings.vehicles, logs, today]);
 
   const stats = useMemo(() => {
     const allRawVehicles = settings.vehicles || [];
@@ -228,13 +286,106 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
     setNewAlert({ type: 'KM', description: '', status: 'ACTIVE' });
   };
 
-  const handleDeleteAlert = (alertId: string) => {
-    if (!selectedVehicleForAlerts) return;
-    const updatedVehicles = (settings.vehicles || []).map(v => 
-      v.id === selectedVehicleForAlerts.id ? { ...v, alerts: (v.alerts || []).filter(a => a.id !== alertId) } : v
+  const handleConfirmSecureAction = async () => {
+    if (!secureAction || !selectedVehicleForAlerts) return;
+    
+    setIsVerifying(true);
+    setAuthError('');
+
+    let validatedUsers = settings.users || [];
+    const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
+
+    // Sincronização obrigatória antes da validação
+    if (targetUrl) {
+      try {
+        const res = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`).then(r => r.ok ? r.json() : null);
+        if (Array.isArray(res) && res.length > 0) {
+          validatedUsers = res;
+          // Note: Here we don't update global settings state as we don't have onUpdateSettings, 
+          // but we use the fresh list for validation.
+        }
+      } catch (err) {
+        console.warn("Falha na sincronização obrigatória durante ação segura:", err);
+      }
+    }
+
+    // Validate user credentials
+    const user = validatedUsers.find(u => 
+      u && u.username && u.username.toLowerCase() === authData.username.toLowerCase() && 
+      u.password && u.password.toString() === authData.password
     );
+
+    if (!user) {
+      setAuthError('Usuário ou senha inválidos');
+      setIsVerifying(false);
+      return;
+    }
+
+    // Check if user has permission
+    const isMaster = user.username.toLowerCase() === 'cavalieri';
+    const { type, alertId } = secureAction;
+    const alertDesc = selectedVehicleForAlerts.alerts?.find(a => a.id === alertId)?.description || 'Alerta';
+
+    if (!isMaster && !user.permissions.admin) {
+      if (type === 'DELETE' && !user.permissions.deleteMaintenance) {
+        setAuthError('Usuário sem permissão para EXCLUIR alertas');
+        setIsVerifying(false);
+        return;
+      }
+      if (type === 'COMPLETE' && !user.permissions.completeMaintenance) {
+        setAuthError('Usuário sem permissão para CONCLUIR manutenções');
+        setIsVerifying(false);
+        return;
+      }
+    }
+
+    let updatedVehicles: Vehicle[] = [];
+    let auditDesc = "";
+    let auditDetails = "";
+
+    if (type === 'DELETE') {
+      updatedVehicles = (settings.vehicles || []).map(v => 
+        v.id === selectedVehicleForAlerts.id ? { ...v, alerts: (v.alerts || []).filter(a => a.id !== alertId) } : v
+      );
+      auditDesc = "ALERTA_EXCLUIDO";
+      auditDetails = `Alerta "${alertDesc}" excluído da viatura ${selectedVehicleForAlerts.prefix} por ${user.name}`;
+    } else if (type === 'COMPLETE') {
+      updatedVehicles = (settings.vehicles || []).map(v => 
+        v.id === selectedVehicleForAlerts.id ? { 
+          ...v, 
+          alerts: (v.alerts || []).map(a => 
+            a.id === alertId ? { 
+              ...a, 
+              status: 'DONE', 
+              completedAt: new Date().toISOString(), 
+              completedBy: `${user.rank || ''} ${user.name}`.trim() 
+            } : a
+          ) 
+        } : v
+      );
+      auditDesc = "MANUTENCAO_CONCLUIDA";
+      auditDetails = `Manutenção "${alertDesc}" marcada como CONCLUÍDA na viatura ${selectedVehicleForAlerts.prefix} por ${user.name}`;
+    }
+
     onUpdateVehicles?.(updatedVehicles);
+    if (auditDesc) {
+      onSaveAuditLog?.(auditDesc, auditDetails);
+    }
     setSelectedVehicleForAlerts(updatedVehicles.find(v => v.id === selectedVehicleForAlerts.id) || null);
+    setSecureAction(null);
+    setAuthData({ username: '', password: '' });
+    setAuthError('');
+    setIsVerifying(false);
+  };
+
+  const handleDeleteAlert = (alertId: string) => {
+    setSecureAction({ type: 'DELETE', alertId });
+    setAuthError('');
+  };
+
+  const handleCompleteAlert = (alertId: string) => {
+    setSecureAction({ type: 'COMPLETE', alertId });
+    setAuthError('');
   };
 
   return (
@@ -367,6 +518,56 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
         </div>
       </div>
 
+      {/* Critical Alerts Summary Section */}
+      {criticalAlertsSummary.length > 0 && (
+        <div className="bg-white border-2 border-red-100 rounded-[2.5rem] p-8 shadow-sm animate-in slide-in-from-top-4 duration-700">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-3 bg-red-600 rounded-2xl text-white shadow-lg shadow-red-100">
+              <Bell className="w-6 h-6 animate-bounce" />
+            </div>
+            <div>
+              <h3 className="text-xl font-black uppercase text-gray-900 tracking-tight">Alertas de Manutenção</h3>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">Veículos com serviços pendentes ou próximos do vencimento</p>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {criticalAlertsSummary.map((item, idx) => (
+              <div 
+                key={`${item.vehiclePrefix}-${item.alert.id}`} 
+                onClick={() => {
+                  const v = settings.vehicles?.find(v => v.prefix === item.vehiclePrefix);
+                  if (v) setSelectedVehicleForAlerts(v);
+                }}
+                className={`flex items-center justify-between p-5 rounded-3xl border-2 cursor-pointer transition-all hover:scale-[1.02] shadow-sm ${
+                  item.level === 'critical' ? 'bg-red-50 border-red-200 hover:shadow-red-50' : 'bg-orange-50 border-orange-200 hover:shadow-orange-50'
+                }`}
+              >
+                <div className="flex items-center gap-4">
+                  <div className={`p-2.5 rounded-xl ${item.level === 'critical' ? 'bg-red-600' : 'bg-orange-500'} text-white`}>
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div className="overflow-hidden">
+                    <p className="text-[10px] font-black uppercase text-gray-400 leading-none mb-1">{item.vehiclePrefix}</p>
+                    <h4 className="text-xs font-black uppercase text-gray-900 truncate">{item.alert.description}</h4>
+                  </div>
+                </div>
+                <div className="flex flex-col items-end shrink-0 ml-4">
+                  <span className={`text-[9px] font-black uppercase px-2 py-1 rounded-lg ${
+                    item.level === 'critical' ? 'bg-red-200 text-red-700' : 'bg-orange-200 text-orange-700'
+                  }`}>
+                    {item.level === 'critical' ? 'VENCIDO' : 'PRÓXIMO'}
+                  </span>
+                  <p className="text-[10px] mt-1 font-bold text-gray-500">
+                    {item.alert.type === 'KM' ? `${item.alert.targetKm} KM` : item.alert.targetDate}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Stations Breakdown */}
       <div className="space-y-10">
         {stationsData.map((station, sIdx) => (
@@ -396,7 +597,10 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
                     <div className="flex justify-between items-start mb-6">
                       <div>
                         <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Vatura</span>
-                        <h4 className="text-xl font-black text-gray-900 uppercase tracking-tighter flex items-center gap-2">
+                        <h4 
+                          onClick={() => onVehicleReportClick?.(v.prefix)}
+                          className="text-xl font-black text-gray-900 uppercase tracking-tighter flex items-center gap-2 cursor-pointer hover:text-blue-600 transition-colors"
+                        >
                           {v.prefix}
                         </h4>
                       </div>
@@ -408,9 +612,18 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
                         </div>
                         <button 
                           onClick={() => setSelectedVehicleForAlerts(v)}
-                          className={`p-2 rounded-xl transition-all ${v.hasAlerts ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
+                          className={`p-2 rounded-xl transition-all relative ${
+                            v.isCritical ? 'bg-red-600 text-white shadow-lg shadow-red-100' : 
+                            v.isWarning ? 'bg-orange-500 text-white shadow-lg shadow-orange-100' : 
+                            'bg-gray-50 text-gray-400 hover:bg-gray-100'
+                          }`}
                         >
                           <Bell className="w-4 h-4" />
+                          {v.hasAlerts && (
+                            <span className="absolute -top-1 -right-1 w-3 h-3 bg-white rounded-full flex items-center justify-center border border-gray-200">
+                              <span className={`w-1.5 h-1.5 rounded-full ${v.isCritical ? 'bg-red-600' : 'bg-orange-500'}`}></span>
+                            </span>
+                          )}
                         </button>
                       </div>
                     </div>
@@ -452,7 +665,12 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
                   <tbody className="divide-y divide-gray-100">
                     {station.vehicles.map(v => (
                       <tr key={v.prefix} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-6 py-4 font-black uppercase text-gray-900">{v.prefix}</td>
+                        <td 
+                          onClick={() => onVehicleReportClick?.(v.prefix)}
+                          className="px-6 py-4 font-black uppercase text-gray-900 cursor-pointer hover:text-blue-600 transition-colors"
+                        >
+                          {v.prefix}
+                        </td>
                         <td className="px-6 py-4 font-mono text-xs">{v.plate}</td>
                         <td className="px-6 py-4">
                           <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${
@@ -470,9 +688,16 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
                         <td className="px-6 py-4">
                            <button 
                              onClick={() => setSelectedVehicleForAlerts(v)}
-                             className={`p-2 rounded-xl transition-all ${v.hasAlerts ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-400'}`}
+                             className={`p-2 rounded-xl transition-all flex items-center gap-2 ${
+                               v.isCritical ? 'bg-red-100 text-red-700 border border-red-200' : 
+                               v.isWarning ? 'bg-orange-100 text-orange-700 border border-orange-200' : 
+                               'bg-gray-100 text-gray-400'
+                             }`}
                            >
                              <Bell className="w-4 h-4" />
+                             {v.hasAlerts && (
+                               <span className="text-[10px] font-black">{v.activeAlertsCount}</span>
+                             )}
                            </button>
                         </td>
                       </tr>
@@ -493,6 +718,10 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
               <div>
                 <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Manutenção e Alertas</p>
                 <h3 className="text-2xl font-black uppercase tracking-tighter mt-1">{selectedVehicleForAlerts.prefix}</h3>
+                <div className="flex gap-2 mt-2">
+                  <span className="text-[10px] font-black uppercase bg-white/10 px-2 py-1 rounded-md">PLACA: {selectedVehicleForAlerts.plate}</span>
+                  <span className="text-[10px] font-black uppercase bg-blue-600 px-2 py-1 rounded-md">KM ATUAL: {(settings.vehicles?.find(v => v.id === selectedVehicleForAlerts.id) as any)?.currentKm || '---'}</span>
+                </div>
               </div>
               <button 
                 onClick={() => setSelectedVehicleForAlerts(null)}
@@ -595,28 +824,149 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
                   {(selectedVehicleForAlerts.alerts || []).length === 0 ? (
                     <p className="text-center py-10 text-gray-400 text-xs font-bold uppercase tracking-widest bg-gray-50 rounded-3xl border-2 border-dashed">Nenhuma manutenção agendada</p>
                   ) : (
-                    (selectedVehicleForAlerts.alerts || []).map(alert => (
-                      <div key={alert.id} className="bg-white border-2 border-gray-100 p-6 rounded-3xl flex items-center justify-between group hover:border-blue-200 transition-all">
-                        <div className="flex gap-4 items-center">
-                           <div className={`p-3 rounded-2xl ${alert.type === 'KM' ? 'bg-blue-50 text-blue-600' : 'bg-indigo-50 text-indigo-600'}`}>
-                             {alert.type === 'KM' ? <TrendingUp className="w-5 h-5" /> : <Calendar className="w-5 h-5" />}
-                           </div>
-                           <div>
-                              <h5 className="text-xs font-black uppercase text-gray-900">{alert.description}</h5>
-                              <p className="text-[10px] font-bold text-gray-400 uppercase mt-0.5 tracking-tight">
-                                {alert.type === 'KM' ? `Limite: ${alert.targetKm} Km (Aviso: ${alert.warnKmBefore} Km antes)` : `Vencimento: ${alert.targetDate} (Aviso: ${alert.warnDaysBefore} dias antes)`}
-                              </p>
-                           </div>
+                    (selectedVehicleForAlerts.alerts || [])
+                      .sort((a, b) => {
+                        if (a.status === b.status) return 0;
+                        return a.status === 'ACTIVE' ? -1 : 1;
+                      })
+                      .map(alert => {
+                      const curKm = (settings.vehicles?.find(v => v.id === selectedVehicleForAlerts.id) as any)?.currentKm || 0;
+                      const level = getAlertStatus(alert, curKm);
+                      return (
+                        <div key={alert.id} className={`bg-white border-2 p-6 rounded-3xl flex flex-col md:flex-row md:items-center justify-between gap-4 group transition-all ${
+                          alert.status === 'DONE' ? 'opacity-60 grayscale border-gray-100 bg-gray-50' :
+                          level === 'critical' ? 'border-red-200 hover:shadow-red-50' : 
+                          level === 'warning' ? 'border-orange-200 hover:shadow-orange-50' : 
+                          'border-gray-100'
+                        }`}>
+                          <div className="flex gap-4 items-center flex-1">
+                             <div className={`p-3 rounded-2xl ${
+                               alert.status === 'DONE' ? 'bg-gray-200 text-gray-500' :
+                               level === 'critical' ? 'bg-red-50 text-red-600' : 
+                               level === 'warning' ? 'bg-orange-50 text-orange-600' : 
+                               alert.type === 'KM' ? 'bg-blue-50 text-blue-600' : 'bg-indigo-50 text-indigo-600'
+                             }`}>
+                               {alert.status === 'DONE' ? <CheckCircle className="w-5 h-5" /> : alert.type === 'KM' ? <TrendingUp className="w-5 h-5" /> : <Calendar className="w-5 h-5" />}
+                             </div>
+                             <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <h5 className="text-xs font-black uppercase text-gray-900">{alert.description}</h5>
+                                  {alert.status === 'DONE' ? (
+                                    <span className="text-[9px] font-black uppercase bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full">Concluído</span>
+                                  ) : (
+                                    <>
+                                      {level === 'critical' && <span className="text-[9px] font-black uppercase bg-red-600 text-white px-2 py-0.5 rounded-full animate-pulse">Vencido</span>}
+                                      {level === 'warning' && <span className="text-[9px] font-black uppercase bg-orange-500 text-white px-2 py-0.5 rounded-full">Alerta</span>}
+                                    </>
+                                  )}
+                                </div>
+                                <p className="text-[10px] font-bold text-gray-400 uppercase mt-0.5 tracking-tight">
+                                  {alert.type === 'KM' ? `Limite: ${alert.targetKm} Km` : `Vencimento: ${alert.targetDate}`}
+                                </p>
+                                {alert.status === 'DONE' && alert.completedAt && (
+                                  <p className="text-[9px] font-black text-blue-600 uppercase mt-1">
+                                    ✓ Concluído por {alert.completedBy} em {new Date(alert.completedAt).toLocaleDateString('pt-BR')}
+                                  </p>
+                                )}
+                             </div>
+                          </div>
+                          
+                          <div className="flex gap-2 justify-end">
+                            {alert.status === 'ACTIVE' && (
+                              <button 
+                                onClick={() => handleCompleteAlert(alert.id)}
+                                title="Marcar como concluído"
+                                className="bg-green-50 text-green-600 hover:bg-green-600 hover:text-white p-2.5 rounded-xl transition-all flex items-center gap-2 text-[10px] font-black uppercase"
+                              >
+                                <Check className="w-4 h-4" />
+                                <span>Concluir</span>
+                              </button>
+                            )}
+                            <button 
+                              onClick={() => handleDeleteAlert(alert.id)}
+                              title="Excluir alerta"
+                              className="bg-red-50 text-red-400 hover:bg-red-500 hover:text-white p-2.5 rounded-xl transition-all"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
-                        <button 
-                          onClick={() => handleDeleteAlert(alert.id)}
-                          className="bg-red-50 text-red-400 hover:bg-red-500 hover:text-white p-2.5 rounded-xl transition-all"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Secure Action Modal (Auth Required) */}
+      {secureAction && (
+        <div className="fixed inset-0 z-[300] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2rem] w-full max-w-md overflow-hidden shadow-2xl animate-in zoom-in duration-200">
+            <div className="p-8">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-3 bg-red-600 rounded-2xl text-white">
+                  <Shield className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black uppercase text-gray-900 leading-tight">Autenticação Necessária</h3>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">Valide sua identidade para continuar</p>
+                </div>
+              </div>
+
+              <p className="text-xs font-bold text-gray-500 uppercase mb-6 leading-relaxed">
+                Você está tentando <span className="text-red-600 font-black">{secureAction.type === 'DELETE' ? 'EXCLUIR' : 'CONCLUIR'}</span> um alerta de manutenção. Esta ação requer nome de usuário e senha de administrador.
+              </p>
+
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Usuário</label>
+                  <input 
+                    type="text" 
+                    value={authData.username}
+                    onChange={e => setAuthData({...authData, username: e.target.value})}
+                    className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl p-4 text-sm font-bold outline-none focus:border-red-600 focus:bg-white transition-all"
+                    placeholder="DIGITE SEU USUÁRIO"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Senha</label>
+                  <input 
+                    type="password" 
+                    value={authData.password}
+                    onChange={e => setAuthData({...authData, password: e.target.value})}
+                    className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl p-4 text-sm font-bold outline-none focus:border-red-600 focus:bg-white transition-all"
+                    placeholder="••••••••"
+                  />
+                </div>
+
+                {authError && (
+                  <div className="p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-red-600 animate-in slide-in-from-top-1">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span className="text-[10px] font-black uppercase">{authError}</span>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-2">
+                  <button 
+                    onClick={() => setSecureAction(null)}
+                    className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-2xl py-4 text-xs font-black uppercase transition-all"
+                  >
+                    Cancelar
+                  </button>
+                  <button 
+                    onClick={handleConfirmSecureAction}
+                    disabled={isVerifying}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded-2xl py-4 text-xs font-black uppercase shadow-lg shadow-red-100 transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {isVerifying ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Validando...
+                      </>
+                    ) : "Confirmar"}
+                  </button>
                 </div>
               </div>
             </div>
