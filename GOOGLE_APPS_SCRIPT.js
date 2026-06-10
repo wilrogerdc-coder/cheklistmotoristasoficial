@@ -97,6 +97,30 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
+    // AÇÃO: Excluir Lançamento (Apenas Superusuário)
+    if (action === 'deleteLog') {
+      const logSheet = sheet.getSheetByName('LOGS');
+      if (!logSheet) return ContentService.createTextOutput(JSON.stringify({ result: 'error', message: 'Sheet LOGS not found' })).setMimeType(ContentService.MimeType.JSON);
+      
+      const logData = logSheet.getDataRange().getValues();
+      const headers = logData[0];
+      const idIdx = headers.indexOf('ID PROTOCOLO');
+      
+      if (idIdx === -1) return ContentService.createTextOutput(JSON.stringify({ result: 'error', message: 'ID PROTOCOLO column not found' })).setMimeType(ContentService.MimeType.JSON);
+      
+      let deleted = false;
+      for (let i = 1; i < logData.length; i++) {
+        if (logData[i][idIdx] === data.id) {
+          logSheet.deleteRow(i + 1);
+          deleted = true;
+          break;
+        }
+      }
+      
+      return ContentService.createTextOutput(JSON.stringify({ result: deleted ? 'success' : 'not_found' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
     // AÇÃO: Salvar Justificativa
     if (action === 'saveJustification') {
       let jSheet = sheet.getSheetByName('JUSTIFICATIVAS');

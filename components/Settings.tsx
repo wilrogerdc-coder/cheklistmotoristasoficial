@@ -97,6 +97,7 @@ interface SettingsProps {
   currentUser: User | null;
   onSave: (newSettings: AppSettings) => void;
   onClose: () => void;
+  onDeleteLog?: (id: string) => Promise<void>;
   onExportModel: () => void;
   onImportModel: (e: React.ChangeEvent<HTMLInputElement>) => void;
   initialTab?: 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login';
@@ -116,6 +117,7 @@ export const Settings: React.FC<SettingsProps> = ({
   currentUser,
   onSave, 
   onClose, 
+  onDeleteLog,
   onExportModel,
   onImportModel,
   initialTab = 'items',
@@ -3012,6 +3014,7 @@ export const Settings: React.FC<SettingsProps> = ({
               onFetch={fetchLogs}
               isLoading={isLoadingLogs}
               onUpdateVehicles={(updated) => onSave({ ...localSettings, vehicles: updated })}
+              onDeleteLog={onDeleteLog}
               initialPrefix={initialReportPrefix}
               initialReport={initialReportType}
             />

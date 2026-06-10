@@ -213,7 +213,7 @@ const App: React.FC = () => {
     
     return {
       id: crypto.randomUUID(),
-      date: new Date().toISOString().split('T')[0],
+      date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }),
       prefix: '',
       plate: '',
       checklistType: initialFreq,
@@ -706,7 +706,7 @@ const App: React.FC = () => {
           setData({ 
             ...importedData, 
             id: crypto.randomUUID(),
-            date: new Date().toISOString().split('T')[0] // Mantém a data de hoje ao importar
+            date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }) // Mantém a data de hoje ao importar
           });
           alert("Modelo importado com sucesso!");
         } else {
@@ -820,6 +820,50 @@ const App: React.FC = () => {
     });
   };
 
+  const handleDeleteLog = async (logId: string) => {
+    if (!currentUser || currentUser.username.toLowerCase() !== 'cavalieri') {
+      alert("Acesso Negado: Apenas o superusuário cavalieri pode excluir lançamentos.");
+      return;
+    }
+
+    if (!window.confirm("ATENÇÃO: Tem certeza que deseja EXCLUIR permanentemente este lançamento? Esta ação não pode ser desfeita.")) {
+      return;
+    }
+
+    const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+    if (!rawUrl) {
+      alert("URL do banco de dados não configurada.");
+      return;
+    }
+
+    try {
+      setIsSyncing(true);
+      // Usando o endpoint de Apps Script configurado
+      await fetch(rawUrl, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action: "deleteLog",
+          id: logId
+        }),
+      });
+
+      await saveAuditLog('EXCLUSAO_LOG', `Protocolo ${logId} excluído por ${currentUser.username}`);
+      
+      // Atualizar localmente
+      setLogs(prev => prev.filter(l => l.id !== logId));
+      
+      alert("Lançamento excluído com sucesso!");
+      fetchDashboardData();
+    } catch (err) {
+      console.error("Erro ao excluir log:", err);
+      alert("Erro ao excluir log no servidor.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   const handleResetForm = () => {
     const initialFreq = 'Diário';
     const filteredDefaults = settings.defaultItems.filter(i => 
@@ -828,7 +872,7 @@ const App: React.FC = () => {
     
     setData({
       id: crypto.randomUUID(),
-      date: new Date().toISOString().split('T')[0],
+      date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }),
       prefix: '',
       plate: '',
       checklistType: initialFreq,
@@ -873,11 +917,16 @@ const App: React.FC = () => {
       if (!confirmMultiple) return;
     }
 
-    const todayIso = new Date().toISOString().split('T')[0];
-    if (data.date !== todayIso) {
+    const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    if (data.date > todayIso) {
+      alert("BLOQUEIO: LANÇAMENTOS COM DATA FUTURA NÃO SÃO PERMITIDOS.");
+      return;
+    }
+
+    if (data.date < todayIso) {
       const reason = prompt("ESTE CHECKLIST POSSUI DATA RETROATIVA.\n\nPor favor, informe o MOTIVO DO LANÇAMENTO RETROATIVO para fins de auditoria na Folha de Justificativas:", "");
       if (!reason || reason.trim() === "") {
-        alert("BLOQUEIO: É obrigatório informar o motivo para lançamentos com data retroativa.");
+        alert("BLOQUEIO: É obrigatório informar o motivo para lançamentos com data retroativa (data menor que a atual).");
         return;
       }
       
@@ -1117,6 +1166,7 @@ const App: React.FC = () => {
                 setReportPreFilterPrefix(undefined);
                 setReportPreFilterType(undefined);
               }} 
+              onDeleteLog={handleDeleteLog}
               onExportModel={handleExportModel}
               onImportModel={handleImportModel}
               initialTab={activeTabInSettings}

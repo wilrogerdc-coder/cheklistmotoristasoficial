@@ -67,7 +67,16 @@ export const Header: React.FC<HeaderProps> = ({
             <input 
               type="date" 
               value={date} 
-              onChange={(e) => onDateChange(e.target.value)}
+              max={new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' })}
+              onChange={(e) => {
+                const val = e.target.value;
+                const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+                if (val > today) {
+                  alert("BLOQUEIO: LANÇAMENTOS COM DATA FUTURA NÃO SÃO PERMITIDOS.");
+                  return;
+                }
+                onDateChange(val);
+              }}
               className="bg-transparent text-white text-sm font-bold outline-none border-b border-white/30 focus:border-white transition-colors cursor-pointer w-full text-center sm:text-right h-5"
             />
           </div>

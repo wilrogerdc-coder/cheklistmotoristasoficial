@@ -26,6 +26,7 @@ import {
   Lock,
   ShieldCheck,
   Shield,
+  Trash2,
 } from "lucide-react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
@@ -35,6 +36,7 @@ interface ReportsProps {
   settings: AppSettings;
   currentUser: User | null;
   onFetch: (prefix?: string, month?: string) => Promise<void>;
+  onDeleteLog?: (id: string) => Promise<void>;
   isLoading?: boolean;
   onUpdateVehicles?: (vehicles: any[]) => void;
   initialPrefix?: string;
@@ -63,6 +65,7 @@ export const Reports: React.FC<ReportsProps> = ({
   settings,
   currentUser,
   onFetch,
+  onDeleteLog,
   isLoading,
   onUpdateVehicles,
   initialPrefix,
@@ -3346,6 +3349,26 @@ export const Reports: React.FC<ReportsProps> = ({
                   <td className="p-2 italic text-gray-500 truncate max-w-[150px]">
                     {log.generalObservation || "-"}
                   </td>
+                  <td className="p-2 no-print">
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setSelectedLog(log)}
+                        className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
+                        title="Ver Detalhes"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
+                      {currentUser?.username.toLowerCase() === 'cavalieri' && (
+                        <button
+                          onClick={() => onDeleteLog?.(log.id)}
+                          className="p-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors"
+                          title="Excluir Lançamento"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -3512,13 +3535,24 @@ export const Reports: React.FC<ReportsProps> = ({
                     </td>
                   )}
                   <td className="p-2 no-print">
-                    <button
-                      onClick={() => setSelectedLog(log)}
-                      className="p-1.5 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors"
-                      title="Ver Detalhes"
-                    >
-                      <Eye className="w-4 h-4" />
-                    </button>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setSelectedLog(log)}
+                        className="p-1.5 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors"
+                        title="Ver Detalhes"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      {currentUser?.username.toLowerCase() === 'cavalieri' && (
+                        <button
+                          onClick={() => onDeleteLog?.(log.id)}
+                          className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors"
+                          title="Excluir Lançamento"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -3753,6 +3787,15 @@ export const Reports: React.FC<ReportsProps> = ({
                           >
                             <FileText className="w-4 h-4" />
                           </button>
+                          {currentUser?.username.toLowerCase() === 'cavalieri' && (
+                            <button
+                              onClick={() => onDeleteLog?.(log.id)}
+                              className="p-2 bg-red-50 hover:bg-red-600 text-red-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
+                              title="Excluir Lançamento"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
