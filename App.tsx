@@ -820,13 +820,44 @@ const App: React.FC = () => {
     });
   };
 
+  const handleResetForm = () => {
+    const initialFreq = 'Diário';
+    const filteredDefaults = settings.defaultItems.filter(i => 
+      i.frequency === initialFreq || i.frequency === 'Ambos'
+    );
+    
+    setData({
+      id: crypto.randomUUID(),
+      date: new Date().toISOString().split('T')[0],
+      prefix: '',
+      plate: '',
+      checklistType: initialFreq,
+      km: '',
+      vehicleStatus: 'OPERANDO',
+      items: filteredDefaults.map(i => ({ ...i, status: 'PENDING' as ItemStatus, photos: [] })),
+      damages: [],
+      photos: [],
+      vehicleImages: [...settings.vehicleImages],
+      vehicleImageRatios: [...(settings.vehicleImageRatios || INITIAL_VEHICLE_RATIOS)],
+      generalObservation: '',
+      signatureName: currentUser?.name || currentUser?.username || '',
+      signatureRank: currentUser?.rank || 'CONFERENTE'
+    });
+    
+    setShowExportMenu(false);
+    setShowDamageMap(false);
+    setPrintTimestamp('');
+  };
+
   const handleVisualizarPdf = async () => {
+    if (isSaving) return;
+
     if (data.items.some(item => item.status === 'PENDING')) {
-      alert("BLOQUEIO: Existem itens pendentes.");
+      alert("BLOQUEIO: Existem itens do checklist que ainda não foram marcados. Por favor, revise todos os itens.");
       return;
     }
     if (!data.prefix.trim() || !data.plate.trim() || !data.km.trim() || !data.signatureName?.trim()) {
-      alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios.");
+      alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios para finalizar.");
       return;
     }
 
@@ -838,12 +869,12 @@ const App: React.FC = () => {
     );
 
     if (alreadyDone) {
-      alert(`BLOQUEIO: Já existe um checklist realizado hoje para a viatura ${data.prefix}. Apenas um lançamento por dia é permitido.`);
-      return;
+      const confirmMultiple = window.confirm(`ATENÇÃO: Já existe um checklist realizado hoje para a viatura ${data.prefix}.\n\nDeseja realizar um NOVO checklist mesmo assim?`);
+      if (!confirmMultiple) return;
     }
 
-    const today = new Date().toISOString().split('T')[0];
-    if (data.date !== today) {
+    const todayIso = new Date().toISOString().split('T')[0];
+    if (data.date !== todayIso) {
       const reason = prompt("ESTE CHECKLIST POSSUI DATA RETROATIVA.\n\nPor favor, informe o MOTIVO DO LANÇAMENTO RETROATIVO para fins de auditoria na Folha de Justificativas:", "");
       if (!reason || reason.trim() === "") {
         alert("BLOQUEIO: É obrigatório informar o motivo para lançamentos com data retroativa.");
@@ -854,30 +885,30 @@ const App: React.FC = () => {
       const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
       if (rawUrl) {
          try {
-           const jData = {
-             action: "saveJustification",
-             id: crypto.randomUUID(),
-             date: data.date,
-             dateRef: data.date,
-             type: data.checklistType?.toUpperCase() || "GERAL",
-             vehicleType: data.prefix,
-             station: data.station || "",
-             justification: `[LANÇAMENTO RETROATIVO] ${reason}`,
-             author: `${data.signatureRank || ''} ${data.signatureName || ''}`.trim(),
-             authorRank: data.signatureRank || "CONFERENTE",
-             createdAt: new Date().toISOString(),
-             month: data.date.substring(0, 7),
-             status: "SIGNED"
-           };
-           
-           await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=saveJustification`, {
-             method: 'POST',
-             mode: 'no-cors',
-             body: JSON.stringify(jData)
-           });
-           console.log("Justificativa retroativa enviada com sucesso.");
+            const jData = {
+              action: "saveJustification",
+              id: crypto.randomUUID(),
+              date: data.date,
+              dateRef: data.date,
+              type: data.checklistType?.toUpperCase() || "GERAL",
+              vehicleType: data.prefix,
+              station: data.station || "",
+              justification: `[LANÇAMENTO RETROATIVO] ${reason}`,
+              author: `${data.signatureRank || ''} ${data.signatureName || ''}`.trim(),
+              authorRank: data.signatureRank || "CONFERENTE",
+              createdAt: new Date().toISOString(),
+              month: data.date.substring(0, 7),
+              status: "SIGNED"
+            };
+            
+            await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=saveJustification`, {
+              method: 'POST',
+              mode: 'no-cors',
+              body: JSON.stringify(jData)
+            });
+            console.log("Justificativa retroativa enviada com sucesso.");
          } catch (err) {
-           console.warn("Erro ao enviar justificativa automática:", err);
+            console.warn("Erro ao enviar justificativa automática:", err);
          }
       }
     }
@@ -887,6 +918,7 @@ const App: React.FC = () => {
     setIsSaving(true);
     
     try {
+      console.log("Iniciando processo de finalização...");
       await saveLogToGoogleSheets();
       await saveAuditLog('CHECKLIST_FINALIZADO', `Checklist ${data.checklistType} finalizado para viatura ${data.prefix}`);
       
@@ -895,14 +927,24 @@ const App: React.FC = () => {
         const logToAppend: LogEntry = {
           ...data,
           date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
-          signatureRank: data.signatureRank || '',
+          signatureRank: data.signatureRank || 'CONFERENTE',
           signatureName: data.signatureName || ''
         } as any;
         await sheetsService.appendLog(googleToken, settings.googleSpreadsheetId, logToAppend);
       }
       
       // Atualizar dados do dashboard em background
-      fetchDashboardData();
+      await fetchDashboardData();
+      
+      alert("Checklist FINALIZADO e GRAVADO com sucesso!");
+      
+      // Abrir diálogo de impressão
+      window.print();
+
+      // Após imprimir, perguntar se quer limpar o formulário
+      if (window.confirm("Deseja limpar o formulário para um novo checklist?")) {
+        handleResetForm();
+      }
       
     } catch (err) {
       console.error("Erro no processo de finalização:", err);
@@ -910,11 +952,6 @@ const App: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
-    
-    // Pequeno atraso para garantir que o loader sumiu antes de abrir o print
-    setTimeout(() => {
-      window.print();
-    }, 300);
   };
 
   const handleSaveReportToDrive = async () => {
@@ -1377,10 +1414,11 @@ const App: React.FC = () => {
             
             <button 
               onClick={handleVisualizarPdf} 
-              className={`px-4 py-2 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all active:scale-95 bg-blue-600 text-white hover:bg-blue-700 shrink-0`}
+              disabled={isSaving}
+              className={`px-4 py-2 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all active:scale-95 ${isSaving ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} text-white shrink-0`}
             >
-              <CheckCircle2 className="w-4 h-4" />
-              <span>FINALIZAR</span>
+              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+              <span>{isSaving ? 'SALVANDO...' : 'FINALIZAR'}</span>
             </button>
 
             {googleToken && (
