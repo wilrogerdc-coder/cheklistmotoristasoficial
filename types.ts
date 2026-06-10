@@ -45,6 +45,9 @@ export interface Vehicle {
   station: string;
   sgb?: string;
   gb?: string;
+  km?: string;
+  status?: string;
+  lastCheckId?: string;
   alerts?: MaintenanceAlert[];
 }
 

@@ -21,7 +21,7 @@ function doPost(e) {
       let logSheet = sheet.getSheetByName('LOGS');
       if (!logSheet) {
         logSheet = sheet.insertSheet('LOGS');
-        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'ID PROTOCOLO', 'LINK PDF', 'DADOS COMPLETOS']);
+        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'OBSERVACOES', 'DETALHE ITENS', 'ID PROTOCOLO', 'LINK PDF', 'DADOS COMPLETOS']);
       }
       
       logSheet.appendRow([
@@ -33,10 +33,45 @@ function doPost(e) {
         data.vehicleStatus,
         data.inspector,
         data.itemsStatus,
+        data.generalObservation || '',
+        data.itemsDetail || '',
         data.id,
         data.pdfUrl || '',
         data.fullData
       ]);
+
+      // VINCULAÇÃO: Atualizar status e KM na ficha da viatura (Sheet VIATURAS)
+      try {
+        const vSheet = sheet.getSheetByName('VIATURAS');
+        if (vSheet) {
+          const vData = vSheet.getDataRange().getValues();
+          const headers = vData[0];
+          const prefixIdx = headers.indexOf('PREFIXO');
+          const kmIdx = headers.indexOf('ULTIMO_KM'); // Pode precisar ser criado
+          const statusIdx = headers.indexOf('STATUS'); // Pode precisar ser criado
+          const idIdx = headers.indexOf('ULTIMA_CONFERENCIA_ID');
+          
+          let targetRow = -1;
+          for (let i = 1; i < vData.length; i++) {
+            if (vData[i][prefixIdx] == data.prefix) {
+              targetRow = i + 1;
+              break;
+            }
+          }
+          
+          if (targetRow > 0) {
+            if (statusIdx >= 0) vSheet.getRange(targetRow, statusIdx + 1).setValue(data.vehicleStatus);
+            if (kmIdx >= 0) vSheet.getRange(targetRow, kmIdx + 1).setValue(data.km);
+            if (idIdx >= 0) vSheet.getRange(targetRow, idIdx + 1).setValue(data.id);
+            else {
+              // Se não existe a coluna KM ou STATUS, adicionamos no final se houver espaço ou apenas ignoramos
+              // Para garantir a vinculação, vamos garantir que as colunas existam no syncEntities
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Erro ao vincular dados à viatura:", e);
+      }
 
       return ContentService.createTextOutput(JSON.stringify({ result: 'success' }))
         .setMimeType(ContentService.MimeType.JSON);
@@ -127,8 +162,8 @@ function doPost(e) {
       let vSheet = sheet.getSheetByName('VIATURAS');
       if (!vSheet) vSheet = sheet.insertSheet('VIATURAS');
       vSheet.clear();
-      vSheet.appendRow(['ID', 'PREFIXO', 'PLACA', 'TIPO', 'POSTO', 'ALERTAS']);
-      vehicles.forEach(v => vSheet.appendRow([v.id, v.prefix, v.plate, v.type, v.station || '', JSON.stringify(v.alerts || [])]));
+      vSheet.appendRow(['ID', 'PREFIXO', 'PLACA', 'TIPO', 'POSTO', 'ULTIMO_KM', 'STATUS', 'ULTIMA_CONFERENCIA_ID', 'ALERTAS']);
+      vehicles.forEach(v => vSheet.appendRow([v.id, v.prefix, v.plate, v.type, v.station || '', v.km || '', v.status || 'OPERANDO', v.lastCheckId || '', JSON.stringify(v.alerts || [])]));
 
       // Sincronizar Postos
       let sSheet = sheet.getSheetByName('POSTOS');
@@ -418,6 +453,9 @@ function doGet(e) {
           plate: item['PLACA'] || '',
           type: item['TIPO'] || 'LEVE/PESADA',
           station: item['POSTO'] || '',
+          km: item['ULTIMO_KM'] || '',
+          status: item['STATUS'] || 'OPERANDO',
+          lastCheckId: item['ULTIMA_CONFERENCIA_ID'] || '',
           alerts: alerts
         };
       });

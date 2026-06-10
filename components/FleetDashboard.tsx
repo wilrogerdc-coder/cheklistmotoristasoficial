@@ -147,7 +147,7 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
       }
 
       const logToday = logs.find(l => normalizeText(l.prefix) === vehiclePrefix && isToday(l.date));
-      const currentKm = logToday ? parseInt(logToday.km) : 0;
+      const currentKm = logToday ? parseInt(logToday.km) : (v.km ? parseInt(v.km) : 0);
       const hasNovelty = logToday?.itemsStatus?.includes("CN");
       
       let pendingDays = 0;
@@ -167,7 +167,7 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
         }
       }
 
-      const statusToday = !!logToday ? "CONFERIDA" : "PENDENTE";
+      const statusToday = !!logToday ? "CONFERIDA" : (v.status === 'BAIXADA' ? 'BAIXADA' : "PENDENTE");
 
       const vehicleAlerts = (v.alerts || []).map(a => ({
         ...a,

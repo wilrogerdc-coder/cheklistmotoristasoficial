@@ -1155,7 +1155,8 @@ const App: React.FC = () => {
                               prefix: vehicle.prefix,
                               plate: vehicle.plate,
                               vehicleType: vehicle.type,
-                              station: vehicle.station
+                              station: vehicle.station,
+                              km: vehicle.km || data.km
                             });
                           } else {
                             setData({
@@ -1163,7 +1164,8 @@ const App: React.FC = () => {
                               prefix: '',
                               plate: '',
                               vehicleType: undefined,
-                              station: undefined
+                              station: undefined,
+                              km: ''
                             });
                           }
                         }} 
