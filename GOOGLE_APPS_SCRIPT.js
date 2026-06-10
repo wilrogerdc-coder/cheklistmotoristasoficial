@@ -21,7 +21,7 @@ function doPost(e) {
       let logSheet = sheet.getSheetByName('LOGS');
       if (!logSheet) {
         logSheet = sheet.insertSheet('LOGS');
-        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'OBSERVACOES', 'DETALHE ITENS', 'ID PROTOCOLO', 'LINK PDF', 'DADOS COMPLETOS']);
+        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'ID PROTOCOLO', 'LINK PDF', 'DADOS COMPLETOS', 'OBSERVACOES', 'DETALHE ITENS']);
       }
       
       logSheet.appendRow([
@@ -33,11 +33,11 @@ function doPost(e) {
         data.vehicleStatus,
         data.inspector,
         data.itemsStatus,
-        data.generalObservation || '',
-        data.itemsDetail || '',
         data.id,
         data.pdfUrl || '',
-        data.fullData
+        data.fullData,
+        data.generalObservation || '',
+        data.itemsDetail || ''
       ]);
 
       // VINCULAÇÃO: Atualizar status e KM na ficha da viatura (Sheet VIATURAS)
