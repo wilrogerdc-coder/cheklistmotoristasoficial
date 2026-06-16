@@ -198,4 +198,10 @@ export interface LogEntry {
   fullData?: string;    // JSON string completo da inspeção (para reimpressão fiel)
   generalObservation?: string;
   screenshot?: string;   // Base64 da imagem do checklist preenchido
+  pdfUrl?: string;
+  avariaDianteira?: string;
+  avariaTraseira?: string;
+  avariaLateralM?: string;
+  avariaLateralC?: string;
+  avariaSuperior?: string;
 }

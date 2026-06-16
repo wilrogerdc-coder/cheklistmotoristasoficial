@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
 import { ChecklistTable } from './components/ChecklistTable';
@@ -21,7 +21,8 @@ import {
   User,
   Vehicle,
   Station,
-  Justification
+  Justification,
+  MaintenanceAlert
 } from './types';
 import { 
   initAuth, 
@@ -765,14 +766,13 @@ const App: React.FC = () => {
       fullData: JSON.stringify(dataForMirror),
       generalObservation: data.generalObservation,
       screenshot: "",
-      pdfUrl: pdfUrl || ""
+      pdfUrl: pdfUrl || "",
+      avariaDianteira: data.vehicleImages[0] || "",
+      avariaTraseira: data.vehicleImages[1] || "",
+      avariaLateralM: data.vehicleImages[2] || "",
+      avariaLateralC: data.vehicleImages[3] || "",
+      avariaSuperior: data.vehicleImages[4] || "",
     };
-
-    if (logData.fullData.length > 45000) {
-      console.warn("Payload grande detectado. Otimizando dados...");
-      const optimizedMirror = { ...dataForMirror, vehicleImages: [] };
-      logData.fullData = JSON.stringify(optimizedMirror);
-    }
 
     const targetUrlWithAction = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=saveLog`;
     console.log("Enviando dados para o Google Sheets...", { id: logData.id, size: logData.fullData.length, url: targetUrlWithAction });
@@ -921,6 +921,18 @@ const App: React.FC = () => {
     if (data.date > todayIso) {
       alert("BLOQUEIO: LANÇAMENTOS COM DATA FUTURA NÃO SÃO PERMITIDOS.");
       return;
+    }
+
+    // Validação de KM - Permitir mesmo KM mas alertar
+    const vehicle = settings.vehicles?.find(v => v.prefix === data.prefix);
+    if (vehicle && vehicle.km && parseInt(data.km) < parseInt(vehicle.km)) {
+      alert(`BLOQUEIO: O KM atual (${data.km}) não pode ser menor que o último KM registrado (${vehicle.km}).`);
+      return;
+    }
+    
+    if (vehicle && vehicle.km && parseInt(data.km) === parseInt(vehicle.km)) {
+      const confirmSameKm = window.confirm(`ATENÇÃO: Você informou o MESMO quilômetro do lançamento anterior (${vehicle.km}).\n\nIsso ocorre quando a viatura não se deslocou (Reserva, Baixada ou sem ocorrências).\n\nDeseja continuar com este KM?`);
+      if (!confirmSameKm) return;
     }
 
     if (data.date < todayIso) {
@@ -1126,6 +1138,57 @@ const App: React.FC = () => {
 
   const hasVehicleImages = data.vehicleImages.some(img => img && img !== "");
 
+  const normalizeText = (text: string) => String(text || "").trim().toUpperCase().replace(/[-\s]/g, "");
+
+  const globalMaintenanceAlerts = useMemo(() => {
+    const alerts: { vehicle: string, alert: MaintenanceAlert, level: 'critical' | 'warning' }[] = [];
+    
+    settings.vehicles?.forEach(v => {
+      if (!v.alerts) return;
+      
+      // Encontrar último KM registrado nos logs para este veículo
+      const lastLog = logs
+        .filter(l => normalizeText(l.prefix) === normalizeText(v.prefix))
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+      
+      const currentKm = lastLog ? parseInt(lastLog.km) : (v.km ? parseInt(v.km) : 0);
+      
+      v.alerts.forEach(a => {
+        if (a.status !== 'ACTIVE') return;
+        
+        // Lógica de KM
+        if (a.type === 'KM' && a.targetKm) {
+          if (currentKm >= a.targetKm) {
+            alerts.push({ vehicle: v.prefix, alert: a, level: 'critical' });
+          } else if (currentKm > 0 && (a.targetKm - currentKm) <= (a.warnKmBefore || 0)) {
+            alerts.push({ vehicle: v.prefix, alert: a, level: 'warning' });
+          }
+        }
+        
+        // Lógica de DATA
+        if (a.type === 'DATE' && a.targetDate) {
+          const today = new Date();
+          today.setHours(0,0,0,0);
+          const target = new Date(a.targetDate);
+          target.setHours(0,0,0,0);
+          
+          if (today.getTime() >= target.getTime()) {
+            alerts.push({ vehicle: v.prefix, alert: a, level: 'critical' });
+          } else {
+            const diffDays = Math.ceil((target.getTime() - today.getTime()) / (1000 * 3600 * 24));
+            if (diffDays <= (a.warnDaysBefore || 0)) {
+              alerts.push({ vehicle: v.prefix, alert: a, level: 'warning' });
+            }
+          }
+        }
+      });
+    });
+    
+    return alerts;
+  }, [settings.vehicles, logs]);
+
+  const criticalAlertsCount = globalMaintenanceAlerts.filter((a) => a.level === 'critical').length;
+
   return (
     <div className="min-h-screen max-w-5xl mx-auto pt-24 pb-4 px-4 sm:px-6 print:pt-0 print:pb-0 print:px-0 transition-all">
       {isSaving && (
@@ -1153,6 +1216,7 @@ const App: React.FC = () => {
             bgColor={settings.headerBgColor}
             vehicleType={data.vehicleType}
             station={data.station}
+            criticalAlertsCount={criticalAlertsCount}
           />
         )}
         <main className="p-4 print:p-2 space-y-4 print:space-y-3">

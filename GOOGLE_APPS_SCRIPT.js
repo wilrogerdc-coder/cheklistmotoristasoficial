@@ -21,7 +21,7 @@ function doPost(e) {
       let logSheet = sheet.getSheetByName('LOGS');
       if (!logSheet) {
         logSheet = sheet.insertSheet('LOGS');
-        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'ID PROTOCOLO', 'DADOS COMPLETOS', 'LINK PDF', 'OBSERVACOES', 'DETALHE ITENS']);
+        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'ID PROTOCOLO', 'DADOS COMPLETOS', 'LINK PDF', 'OBSERVACOES', 'DETALHE ITENS', 'AVARIA_DIANTEIRA', 'AVARIA_TRASEIRA', 'AVARIA_LATERAL_M', 'AVARIA_LATERAL_C', 'AVARIA_SUPERIOR']);
       }
       
       logSheet.appendRow([
@@ -37,7 +37,12 @@ function doPost(e) {
         data.fullData,
         data.pdfUrl || '',
         data.generalObservation || '',
-        data.itemsDetail || ''
+        data.itemsDetail || '',
+        data.avariaDianteira || '',
+        data.avariaTraseira || '',
+        data.avariaLateralM || '',
+        data.avariaLateralC || '',
+        data.avariaSuperior || ''
       ]);
 
       // VINCULAÇÃO: Atualizar status e KM na ficha da viatura (Sheet VIATURAS)
@@ -326,7 +331,15 @@ function doGet(e) {
           inspector: rawLog['CONFERENTE'],
           itemsStatus: rawLog['RESUMO ITENS'],
           id: rawLog['ID PROTOCOLO'],
-          fullData: rawLog['DADOS COMPLETOS']
+          fullData: rawLog['DADOS COMPLETOS'],
+          pdfUrl: rawLog['LINK PDF'],
+          generalObservation: rawLog['OBSERVACOES'],
+          itemsDetail: rawLog['DETALHE ITENS'],
+          avariaDianteira: rawLog['AVARIA_DIANTEIRA'],
+          avariaTraseira: rawLog['AVARIA_TRASEIRA'],
+          avariaLateralM: rawLog['AVARIA_LATERAL_M'],
+          avariaLateralC: rawLog['AVARIA_LATERAL_C'],
+          avariaSuperior: rawLog['AVARIA_SUPERIOR']
         };
       });
 

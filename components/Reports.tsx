@@ -4961,12 +4961,22 @@ export const Reports: React.FC<ReportsProps> = ({
                       selectedLog.date,
                     );
 
-                    // Fallback para imagens da viatura se não estiverem no log (otimização de tamanho)
-                    const inspectionImages =
-                      mirrorData.vehicleImages &&
-                      mirrorData.vehicleImages.length > 0
-                        ? mirrorData.vehicleImages
-                        : settings?.vehicleImages || [];
+                    // Fallback para imagens da viatura do log se não estiverem no mirrorData (otimização de tamanho)
+                    let inspectionImages = mirrorData.vehicleImages || [];
+                    
+                    if (!inspectionImages || inspectionImages.length === 0 || inspectionImages.every((img: string) => !img)) {
+                      if (selectedLog.avariaDianteira || selectedLog.avariaTraseira || selectedLog.avariaLateralM || selectedLog.avariaLateralC || selectedLog.avariaSuperior) {
+                         inspectionImages = [
+                           selectedLog.avariaDianteira || "",
+                           selectedLog.avariaTraseira || "",
+                           selectedLog.avariaLateralM || "",
+                           selectedLog.avariaLateralC || "",
+                           selectedLog.avariaSuperior || ""
+                         ];
+                      } else {
+                         inspectionImages = settings?.vehicleImages || [];
+                      }
+                    }
 
                     const inspectionRatios =
                       mirrorData.vehicleImageRatios ||

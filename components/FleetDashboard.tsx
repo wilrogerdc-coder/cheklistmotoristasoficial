@@ -401,8 +401,41 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
     setAuthError('');
   };
 
+  const criticalVehicles = useMemo(() => {
+    return stationsData.flatMap(s => s.vehicles).filter(v => v.isCritical);
+  }, [stationsData]);
+
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
+      {/* Alerta de Manutenção Crítica */}
+      {criticalVehicles.length > 0 && (
+        <div className="bg-red-600 rounded-[2rem] p-6 shadow-xl shadow-red-200 flex flex-col md:flex-row items-center justify-between gap-4 border-2 border-white/20">
+          <div className="flex items-center gap-4 text-white">
+            <div className="bg-white/20 p-3 rounded-2xl animate-pulse">
+              <Bell className="w-8 h-8 fill-white" />
+            </div>
+            <div>
+              <h3 className="text-xl font-black uppercase tracking-tight">Manutenções Críticas Detectadas!</h3>
+              <p className="text-[10px] font-bold text-red-100 uppercase tracking-widest mt-0.5">
+                Existem {criticalVehicles.length} viaturas com serviços vencidos ou atingindo o limite.
+              </p>
+            </div>
+          </div>
+          <div className="flex -space-x-3">
+             {criticalVehicles.slice(0, 5).map(v => (
+               <div key={v.id} className="w-10 h-10 rounded-full border-2 border-red-600 bg-white flex items-center justify-center text-[10px] font-black text-red-600 shadow-lg">
+                 {v.prefix.replace(/[^0-9]/g, '') || v.prefix.substring(0,2)}
+               </div>
+             ))}
+             {criticalVehicles.length > 5 && (
+               <div className="w-10 h-10 rounded-full border-2 border-red-600 bg-white/30 backdrop-blur flex items-center justify-center text-[10px] font-black text-white">
+                 +{criticalVehicles.length - 5}
+               </div>
+             )}
+          </div>
+        </div>
+      )}
+
       {/* Header Dashboard */}
       <div className="bg-white border rounded-[2.5rem] p-8 shadow-sm relative overflow-hidden">
         <div className="absolute top-0 right-0 -mt-10 -mr-10 w-40 h-40 bg-blue-50 rounded-full blur-3xl opacity-50"></div>
@@ -697,7 +730,7 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
                         <button 
                           onClick={() => setSelectedVehicleForAlerts(v)}
                           className={`p-2 rounded-xl transition-all relative ${
-                            v.isCritical ? 'bg-red-600 text-white shadow-lg shadow-red-100' : 
+                            v.isCritical ? 'bg-red-600 text-white shadow-lg shadow-red-100 animate-pulse' : 
                             v.isWarning ? 'bg-orange-500 text-white shadow-lg shadow-orange-100' : 
                             'bg-gray-50 text-gray-400 hover:bg-gray-100'
                           }`}
@@ -773,7 +806,7 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({
                            <button 
                              onClick={() => setSelectedVehicleForAlerts(v)}
                              className={`p-2 rounded-xl transition-all flex items-center gap-2 ${
-                               v.isCritical ? 'bg-red-100 text-red-700 border border-red-200' : 
+                               v.isCritical ? 'bg-red-100 text-red-700 border border-red-200 animate-pulse' : 
                                v.isWarning ? 'bg-orange-100 text-orange-700 border border-orange-200' : 
                                'bg-gray-100 text-gray-400'
                              }`}

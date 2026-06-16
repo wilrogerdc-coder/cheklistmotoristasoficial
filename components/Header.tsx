@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Calendar } from 'lucide-react';
+import { Calendar, Bell } from 'lucide-react';
 
 interface HeaderProps {
   title: string;
@@ -11,6 +11,7 @@ interface HeaderProps {
   bgColor?: string;
   vehicleType?: string;
   station?: string;
+  criticalAlertsCount?: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({ 
@@ -21,7 +22,8 @@ export const Header: React.FC<HeaderProps> = ({
   logoUrl2, 
   bgColor,
   vehicleType,
-  station 
+  station,
+  criticalAlertsCount = 0
 }) => {
   const headerStyle = bgColor ? { backgroundColor: bgColor } : {};
   
@@ -61,24 +63,33 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Input de data (escondido na impressão) */}
-        <div className="text-left sm:text-right print:hidden bg-black/20 p-2 rounded-lg border border-white/20 min-w-[150px] flex items-center no-print">
-          <div className="flex items-center gap-2 w-full">
-            <Calendar className="w-3.5 h-3.5 text-white/40" />
-            <input 
-              type="date" 
-              value={date} 
-              max={new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' })}
-              onChange={(e) => {
-                const val = e.target.value;
-                const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
-                if (val > today) {
-                  alert("BLOQUEIO: LANÇAMENTOS COM DATA FUTURA NÃO SÃO PERMITIDOS.");
-                  return;
-                }
-                onDateChange(val);
-              }}
-              className="bg-transparent text-white text-sm font-bold outline-none border-b border-white/30 focus:border-white transition-colors cursor-pointer w-full text-center sm:text-right h-5"
-            />
+        <div className="flex items-center gap-3 no-print">
+          {criticalAlertsCount > 0 && (
+            <div className="flex items-center gap-1.5 bg-white/20 p-2 rounded-lg border border-white/30 animate-pulse shadow-lg shadow-white/10">
+              <Bell className="w-4 h-4 text-white fill-white" />
+              <span className="text-[10px] font-black text-white">{criticalAlertsCount}</span>
+            </div>
+          )}
+
+          <div className="text-left sm:text-right print:hidden bg-black/20 p-2 rounded-lg border border-white/20 min-w-[150px] flex items-center">
+            <div className="flex items-center gap-2 w-full">
+              <Calendar className="w-3.5 h-3.5 text-white/40" />
+              <input 
+                type="date" 
+                value={date} 
+                max={new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' })}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+                  if (val > today) {
+                    alert("BLOQUEIO: LANÇAMENTOS COM DATA FUTURA NÃO SÃO PERMITIDOS.");
+                    return;
+                  }
+                  onDateChange(val);
+                }}
+                className="bg-transparent text-white text-sm font-bold outline-none border-b border-white/30 focus:border-white transition-colors cursor-pointer w-full text-center sm:text-right h-5"
+              />
+            </div>
           </div>
         </div>
 
