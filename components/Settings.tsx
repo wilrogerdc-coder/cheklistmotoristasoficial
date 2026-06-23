@@ -90,6 +90,10 @@ interface SettingsProps {
   isSyncing: boolean;
   connectionStatus: 'idle' | 'checking' | 'online' | 'offline';
   onCheckConnection: () => void;
+  reportConfig?: {
+    prefix: string;
+    reportType?: any;
+  };
 }
 
 type TabType = 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login' | 'logs_admin';
@@ -108,7 +112,8 @@ export const Settings: React.FC<SettingsProps> = ({
   onGoogleSync,
   isSyncing,
   connectionStatus,
-  onCheckConnection
+  onCheckConnection,
+  reportConfig
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
 
@@ -2619,6 +2624,7 @@ export const Settings: React.FC<SettingsProps> = ({
               onFetch={fetchLogs}
               isLoading={isLoadingLogs}
               onUpdateVehicles={(updated) => onSave({ ...localSettings, vehicles: updated })}
+              initialConfig={reportConfig}
             />
           </ErrorBoundary>
         )}

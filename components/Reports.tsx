@@ -37,6 +37,10 @@ interface ReportsProps {
   onFetch: (prefix?: string, month?: string) => Promise<void>;
   isLoading?: boolean;
   onUpdateVehicles?: (vehicles: any[]) => void;
+  initialConfig?: {
+    prefix: string;
+    reportType?: ReportType;
+  };
 }
 
 type ReportType =
@@ -62,10 +66,13 @@ export const Reports: React.FC<ReportsProps> = ({
   currentUser,
   onFetch,
   isLoading,
-  onUpdateVehicles
+  onUpdateVehicles,
+  initialConfig,
 }) => {
   const [activeReport, setActiveReport] = useState<ReportType>(null);
-  const [monthFilter, setMonthFilter] = useState<string>(""); // Vazio por padrão para mostrar tudo
+  const [monthFilter, setMonthFilter] = useState<string>(
+    new Date().toISOString().substring(0, 7),
+  ); // Padrão mês atual ao vir do dashboard
   const [monthClosures, setMonthClosures] = useState<any[]>([]);
   const [isClosingMonth, setIsClosingMonth] = useState(false);
   const [showClosureModal, setShowClosureModal] = useState(false);
@@ -89,6 +96,22 @@ export const Reports: React.FC<ReportsProps> = ({
     username: "",
     password: "",
   });
+
+  // Aplicar configuração inicial (vinda do dashboard)
+  useEffect(() => {
+    if (initialConfig?.prefix) {
+      setSelectedPrefixes(new Set([initialConfig.prefix]));
+      
+      if (initialConfig.reportType) {
+        // Se for um tipo genérico como "weekly", decidimos qual mostrar baseado na viatura
+        if (initialConfig.reportType === "synthetic") { // Usamos synthetic como placeholder para "Mirror" se desejado
+             setActiveReport("analytical");
+        } else {
+             setActiveReport(initialConfig.reportType);
+        }
+      }
+    }
+  }, [initialConfig]);
 
   const [justificationDrafts, setJustificationDrafts] = useState<Record<string, string>>({});
   const [showJustificationAuthModal, setShowJustificationAuthModal] = useState(false);

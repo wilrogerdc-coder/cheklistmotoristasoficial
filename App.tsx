@@ -76,8 +76,34 @@ const App: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [justifications, setJustifications] = useState<Justification[]>([]);
   const [isFetchingDashboardData, setIsFetchingDashboardData] = useState(false);
+  const [reportConfig, setReportConfig] = useState<{ prefix: string; reportType?: any } | undefined>(undefined);
   const [lastChecklistData, setLastChecklistData] = useState<{ label: string; status: string; observation?: string }[] | undefined>(undefined);
   const checklistRef = useRef<HTMLDivElement>(null);
+
+  const handleViewReport = (prefix: string) => {
+    const vehicle = settings.vehicles?.find(v => v.prefix === prefix);
+    const reportType = vehicle?.type === 'MOTOCICLETA' ? 'daily_control_motos' : 'daily_control';
+    setReportConfig({ prefix, reportType });
+    setActiveTabInSettings('reports');
+    setView('settings');
+  };
+
+  const handleViewWeekly = (prefix: string) => {
+    const vehicle = settings.vehicles?.find(v => v.prefix === prefix);
+    let reportType: any = 'weekly_leves';
+    if (vehicle?.type === 'MOTOCICLETA') reportType = 'weekly_motos';
+    else if (vehicle?.type === 'AB/AÉREA') reportType = 'weekly_ab';
+    
+    setReportConfig({ prefix, reportType });
+    setActiveTabInSettings('reports');
+    setView('settings');
+  };
+
+  const handleViewMirror = (prefix: string) => {
+    setReportConfig({ prefix, reportType: 'analytical' });
+    setActiveTabInSettings('reports');
+    setView('settings');
+  };
 
   const fetchDashboardData = async () => {
     const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
@@ -1047,6 +1073,7 @@ const App: React.FC = () => {
               isSyncing={isSyncing}
               connectionStatus={connectionStatus}
               onCheckConnection={handleCheckConnection}
+              reportConfig={reportConfig}
             />
           ) : view === 'dashboard' ? (
             <FleetDashboard 
@@ -1056,6 +1083,9 @@ const App: React.FC = () => {
               onRefresh={fetchDashboardData}
               isLoading={isFetchingDashboardData}
               onUpdateVehicles={(updatedVehicles) => handleSaveSettings({ ...settings, vehicles: updatedVehicles })}
+              onViewReport={handleViewReport}
+              onViewWeekly={handleViewWeekly}
+              onViewMirror={handleViewMirror}
             />
           ) : (
             <>
