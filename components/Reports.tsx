@@ -26,7 +26,6 @@ import {
   Lock,
   ShieldCheck,
   Shield,
-  Trash2,
 } from "lucide-react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
@@ -36,11 +35,8 @@ interface ReportsProps {
   settings: AppSettings;
   currentUser: User | null;
   onFetch: (prefix?: string, month?: string) => Promise<void>;
-  onDeleteLog?: (id: string) => Promise<void>;
   isLoading?: boolean;
   onUpdateVehicles?: (vehicles: any[]) => void;
-  initialPrefix?: string;
-  initialReport?: ReportType;
 }
 
 type ReportType =
@@ -65,21 +61,11 @@ export const Reports: React.FC<ReportsProps> = ({
   settings,
   currentUser,
   onFetch,
-  onDeleteLog,
   isLoading,
-  onUpdateVehicles,
-  initialPrefix,
-  initialReport
+  onUpdateVehicles
 }) => {
-  const [activeReport, setActiveReport] = useState<ReportType>(initialReport || null);
-  const [monthFilter, setMonthFilter] = useState<string>(() => {
-    // Se inicializado com prefixo, default para mês atual
-    if (initialPrefix) {
-      const now = new Date();
-      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    }
-    return "";
-  });
+  const [activeReport, setActiveReport] = useState<ReportType>(null);
+  const [monthFilter, setMonthFilter] = useState<string>(""); // Vazio por padrão para mostrar tudo
   const [monthClosures, setMonthClosures] = useState<any[]>([]);
   const [isClosingMonth, setIsClosingMonth] = useState(false);
   const [showClosureModal, setShowClosureModal] = useState(false);
@@ -196,7 +182,7 @@ export const Reports: React.FC<ReportsProps> = ({
 
     try {
       const usersResp = await fetch(
-        `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}action=getUsers&_t=${Date.now()}`,
+        `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}action=getUsers`,
       );
       const users = await usersResp.json();
       const user = users.find(
@@ -306,7 +292,7 @@ export const Reports: React.FC<ReportsProps> = ({
 
     setIsSigning(true);
     try {
-      const usersResp = await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`);
+      const usersResp = await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=getUsers`);
       const users = await usersResp.json();
       const user = users.find((u: any) => 
         u.username.toLowerCase() === justificationAuth.username.toLowerCase() && 
@@ -402,7 +388,7 @@ export const Reports: React.FC<ReportsProps> = ({
   };
 
   const [selectedPrefixes, setSelectedPrefixes] = useState<Set<string>>(
-    initialPrefix ? new Set([initialPrefix]) : new Set(),
+    new Set(),
   );
   const [prefixSearch, setPrefixSearch] = useState<string>("");
   const [postoFilter, setPostoFilter] = useState<string>("");
@@ -543,7 +529,7 @@ export const Reports: React.FC<ReportsProps> = ({
     try {
       // Validar usuário
       const usersResp = await fetch(
-        `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}action=getUsers&_t=${Date.now()}`,
+        `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}action=getUsers`,
       );
       const users = await usersResp.json();
       const user = users.find(
@@ -1149,13 +1135,14 @@ export const Reports: React.FC<ReportsProps> = ({
     const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
     const getDayColor = (d: number) => {
-      const refDate = new Date(2026, 0, 1);
-      const curDate = new Date(year, month - 1, d);
-      const diffDays = Math.round((curDate.getTime() - refDate.getTime()) / (1000 * 60 * 60 * 24));
-      let idx = diffDays % 3;
-      if (idx < 0) idx += 3;
       const colors = ["bg-[#4ade80]", "bg-[#facc15]", "bg-[#60a5fa]"];
-      return colors[idx];
+      // Referência: 01/01/2026 é VERDE (index 0)
+      const refDate = new Date(2026, 0, 1);
+      const targetDate = new Date(year, month - 1, d);
+      const diffTime = targetDate.getTime() - refDate.getTime();
+      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+      const colorIndex = ((diffDays % 3) + 3) % 3;
+      return colors[colorIndex];
     };
 
     const targetLogs = logs.filter((log) => {
@@ -1957,13 +1944,14 @@ export const Reports: React.FC<ReportsProps> = ({
     const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
 
     const getDayColor = (d: number) => {
-      const refDate = new Date(2026, 0, 1);
-      const curDate = new Date(year, month - 1, d);
-      const diffDays = Math.round((curDate.getTime() - refDate.getTime()) / (1000 * 60 * 60 * 24));
-      let idx = diffDays % 3;
-      if (idx < 0) idx += 3;
       const colors = ["bg-[#4ade80]", "bg-[#facc15]", "bg-[#60a5fa]"];
-      return colors[idx];
+      // Referência: 01/01/2026 é VERDE (index 0)
+      const refDate = new Date(2026, 0, 1);
+      const targetDate = new Date(year, month - 1, d);
+      const diffTime = targetDate.getTime() - refDate.getTime();
+      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+      const colorIndex = ((diffDays % 3) + 3) % 3;
+      return colors[colorIndex];
     };
 
     const targetLogs = logs.filter((log) => {
@@ -3349,26 +3337,6 @@ export const Reports: React.FC<ReportsProps> = ({
                   <td className="p-2 italic text-gray-500 truncate max-w-[150px]">
                     {log.generalObservation || "-"}
                   </td>
-                  <td className="p-2 no-print">
-                    <div className="flex gap-1">
-                      <button
-                        onClick={() => setSelectedLog(log)}
-                        className="p-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
-                        title="Ver Detalhes"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                      </button>
-                      {currentUser?.username.toLowerCase() === 'cavalieri' && (
-                        <button
-                          onClick={() => onDeleteLog?.(log.id)}
-                          className="p-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors"
-                          title="Excluir Lançamento"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </td>
                 </tr>
               ))}
             </tbody>
@@ -3535,24 +3503,13 @@ export const Reports: React.FC<ReportsProps> = ({
                     </td>
                   )}
                   <td className="p-2 no-print">
-                    <div className="flex gap-1">
-                      <button
-                        onClick={() => setSelectedLog(log)}
-                        className="p-1.5 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors"
-                        title="Ver Detalhes"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </button>
-                      {currentUser?.username.toLowerCase() === 'cavalieri' && (
-                        <button
-                          onClick={() => onDeleteLog?.(log.id)}
-                          className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors"
-                          title="Excluir Lançamento"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
+                    <button
+                      onClick={() => setSelectedLog(log)}
+                      className="p-1.5 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors"
+                      title="Ver Detalhes"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -3787,15 +3744,6 @@ export const Reports: React.FC<ReportsProps> = ({
                           >
                             <FileText className="w-4 h-4" />
                           </button>
-                          {currentUser?.username.toLowerCase() === 'cavalieri' && (
-                            <button
-                              onClick={() => onDeleteLog?.(log.id)}
-                              className="p-2 bg-red-50 hover:bg-red-600 text-red-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
-                              title="Excluir Lançamento"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
                         </div>
                       </td>
                     </tr>
@@ -4460,18 +4408,6 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
 
             <div className="flex gap-2">
-              <button
-                onClick={() => setShowJustificationModal(true)}
-                className="bg-purple-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 shadow-lg hover:bg-purple-700 transition-all"
-              >
-                <AlertCircle className="w-4 h-4" /> Justificar Dia
-              </button>
-              <button
-                onClick={() => setShowClosureModal(true)}
-                className="bg-blue-900 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-2 shadow-lg hover:bg-black transition-all"
-              >
-                <Lock className="w-4 h-4" /> Fechamento Mensal
-              </button>
             </div>
           </div>
         </div>
@@ -4849,6 +4785,48 @@ export const Reports: React.FC<ReportsProps> = ({
               onRefresh={() => fetchJustifications()}
               isLoading={isFetchingJustifications || isLoading}
               onUpdateVehicles={onUpdateVehicles}
+              onViewReport={(prefix) => {
+                const now = new Date();
+                const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+                if (!monthFilter) setMonthFilter(currentMonth);
+                
+                setSelectedPrefixes(new Set([normalizePrefix(prefix)]));
+                
+                // Determinar se é moto ou viatura leve/pesada para escolher o relatório correto
+                const vehicle = settings.vehicles?.find(v => normalizePrefix(v.prefix) === normalizePrefix(prefix));
+                if (vehicle?.type === "MOTOCICLETA") {
+                  setActiveReport("daily_control_motos");
+                } else {
+                  setActiveReport("daily_control");
+                }
+              }}
+              onViewWeekly={(prefix) => {
+                const now = new Date();
+                const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+                if (!monthFilter) setMonthFilter(currentMonth);
+                
+                setSelectedPrefixes(new Set([normalizePrefix(prefix)]));
+                
+                const vehicle = settings.vehicles?.find(v => normalizePrefix(v.prefix) === normalizePrefix(prefix));
+                if (vehicle?.type === "MOTOCICLETA") {
+                  setActiveReport("weekly_motos");
+                } else if (vehicle?.type === "AB/AÉREA") {
+                  setActiveReport("weekly_ab");
+                } else {
+                  setActiveReport("weekly_leves");
+                }
+              }}
+              onViewMirror={(prefix) => {
+                const latestLog = [...logs]
+                  .filter(l => normalizePrefix(l.prefix) === normalizePrefix(prefix))
+                  .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+                
+                if (latestLog) {
+                  setSelectedLog(latestLog);
+                } else {
+                  alert("Nenhum log encontrado para esta viatura.");
+                }
+              }}
             />
           )}
           {activeReport === "novelties" && renderNoveltiesReport()}
@@ -4961,22 +4939,12 @@ export const Reports: React.FC<ReportsProps> = ({
                       selectedLog.date,
                     );
 
-                    // Fallback para imagens da viatura do log se não estiverem no mirrorData (otimização de tamanho)
-                    let inspectionImages = mirrorData.vehicleImages || [];
-                    
-                    if (!inspectionImages || inspectionImages.length === 0 || inspectionImages.every((img: string) => !img)) {
-                      if (selectedLog.avariaDianteira || selectedLog.avariaTraseira || selectedLog.avariaLateralM || selectedLog.avariaLateralC || selectedLog.avariaSuperior) {
-                         inspectionImages = [
-                           selectedLog.avariaDianteira || "",
-                           selectedLog.avariaTraseira || "",
-                           selectedLog.avariaLateralM || "",
-                           selectedLog.avariaLateralC || "",
-                           selectedLog.avariaSuperior || ""
-                         ];
-                      } else {
-                         inspectionImages = settings?.vehicleImages || [];
-                      }
-                    }
+                    // Fallback para imagens da viatura se não estiverem no log (otimização de tamanho)
+                    const inspectionImages =
+                      mirrorData.vehicleImages &&
+                      mirrorData.vehicleImages.length > 0
+                        ? mirrorData.vehicleImages
+                        : settings?.vehicleImages || [];
 
                     const inspectionRatios =
                       mirrorData.vehicleImageRatios ||

@@ -30,6 +30,8 @@ export const sheetsService = {
           { properties: { title: 'CONFIGURACOES' } },
           { properties: { title: 'VIATURAS' } },
           { properties: { title: 'POSTOS' } },
+          { properties: { title: 'SGBS' } },
+          { properties: { title: 'GBS' } },
           { properties: { title: 'CONFERENTES' } },
           { properties: { title: 'CHECKLISTS' } }
         ]
@@ -50,6 +52,7 @@ export const sheetsService = {
       ['Logo 2', settings.headerLogoUrl2 || ''],
       ['Escala Impressao', settings.printScale || 1],
       ['Marca Dagua', settings.watermarkUrl || ''],
+      ['Senha Ajustes', settings.settingsPassword || ''],
       ['Ultima Sincronizacao', new Date().toISOString()]
     ];
 
@@ -58,10 +61,10 @@ export const sheetsService = {
 
   async syncVehicles(accessToken: string, spreadsheetId: string, vehicles: Vehicle[]) {
     const values = [
-      ['ID', 'PREFIXO', 'PLACA', 'TIPO', 'POSTO', 'GB'],
-      ...vehicles.map(v => [v.id, v.prefix, v.plate, v.type, v.station || '', v.gb || ''])
+      ['ID', 'PREFIXO', 'PLACA', 'TIPO', 'POSTO', 'SGB', 'GB'],
+      ...vehicles.map(v => [v.id, v.prefix, v.plate, v.type, v.station || '', v.sgb || '', v.gb || ''])
     ];
-    await updateSheet(accessToken, spreadsheetId, 'VIATURAS!A1:F' + (vehicles.length + 1), values);
+    await updateSheet(accessToken, spreadsheetId, 'VIATURAS!A1:G' + (vehicles.length + 1), values);
   },
 
   async syncStations(accessToken: string, spreadsheetId: string, stations: Station[]) {
@@ -72,12 +75,28 @@ export const sheetsService = {
     await updateSheet(accessToken, spreadsheetId, 'POSTOS!A1:C' + (stations.length + 1), values);
   },
 
+  async syncSgbs(accessToken: string, spreadsheetId: string, sgbs: any[]) {
+    const values = [
+      ['ID', 'NOME', 'GB_ID'],
+      ...sgbs.map(s => [s.id, s.name, s.gbId || ''])
+    ];
+    await updateSheet(accessToken, spreadsheetId, 'SGBS!A1:C' + (sgbs.length + 1), values);
+  },
+
+  async syncGbs(accessToken: string, spreadsheetId: string, gbs: any[]) {
+    const values = [
+      ['ID', 'NOME'],
+      ...gbs.map(g => [g.id, g.name])
+    ];
+    await updateSheet(accessToken, spreadsheetId, 'GBS!A1:B' + (gbs.length + 1), values);
+  },
+
   async syncUsers(accessToken: string, spreadsheetId: string, users: User[]) {
     const values = [
-      ['ID', 'NOME', 'USUARIO', 'RE'],
-      ...users.map(u => [u.id, u.name || '', u.username, u.rank || ''])
+      ['ID', 'NOME', 'USUARIO', 'RE', 'EMAIL'],
+      ...users.map(u => [u.id, u.name || '', u.username, u.rank || '', u.email || ''])
     ];
-    await updateSheet(accessToken, spreadsheetId, 'CONFERENTES!A1:D' + (users.length + 1), values);
+    await updateSheet(accessToken, spreadsheetId, 'CONFERENTES!A1:E' + (users.length + 1), values);
   },
 
   async appendLog(accessToken: string, spreadsheetId: string, log: LogEntry) {

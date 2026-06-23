@@ -33,8 +33,6 @@ export interface MaintenanceAlert {
   warnDaysBefore?: number;
   status: 'ACTIVE' | 'DONE';
   createdAt: string;
-  completedAt?: string;
-  completedBy?: string;
 }
 
 export interface Vehicle {
@@ -45,9 +43,7 @@ export interface Vehicle {
   station: string;
   sgb?: string;
   gb?: string;
-  km?: string;
-  status?: string;
-  lastCheckId?: string;
+  currentKm?: number;
   alerts?: MaintenanceAlert[];
 }
 
@@ -99,23 +95,26 @@ export interface UserPermissions {
   signAsCmtProntidao?: boolean;
   signAsCmtPosto?: boolean;
   signAsCmtSgb?: boolean;
+  // Permissões específicas por tela
   manageStations?: boolean;
   manageVehicles?: boolean;
   manageUsers?: boolean;
-  manageReports?: boolean;
-  completeMaintenance?: boolean;
-  deleteMaintenance?: boolean;
-  shouldChangePassword?: boolean;
+  manageItems?: boolean;
+  manageImages?: boolean;
+  manageStyle?: boolean;
+  manageDatabase?: boolean;
+  viewAudit?: boolean;
+  manageLogs?: boolean;
 }
 
 export interface User {
   id: string;
   username: string;
   password?: string;
+  email?: string; // Vinculação com Gmail para login OAuth
   name: string;
   rank?: string;
   permissions: UserPermissions;
-  shouldChangePassword?: boolean;
 }
 
 export interface DocumentLink {
@@ -154,8 +153,6 @@ export interface AppSettings {
   appName?: string;
   appDescription?: string;
   developedBy?: string;
-  stationOrder?: string[];
-  dashboardCharts?: string[];
 }
 
 export interface AuditLog {
@@ -198,10 +195,4 @@ export interface LogEntry {
   fullData?: string;    // JSON string completo da inspeção (para reimpressão fiel)
   generalObservation?: string;
   screenshot?: string;   // Base64 da imagem do checklist preenchido
-  pdfUrl?: string;
-  avariaDianteira?: string;
-  avariaTraseira?: string;
-  avariaLateralM?: string;
-  avariaLateralC?: string;
-  avariaSuperior?: string;
 }

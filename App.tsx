@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
 import { ChecklistTable } from './components/ChecklistTable';
@@ -21,8 +21,7 @@ import {
   User,
   Vehicle,
   Station,
-  Justification,
-  MaintenanceAlert
+  Justification
 } from './types';
 import { 
   initAuth, 
@@ -31,9 +30,6 @@ import {
   getAccessToken 
 } from './services/googleAuth';
 import { sheetsService } from './services/googleSheets';
-import { driveService } from './services/googleDrive';
-import html2canvas from 'html2canvas';
-import { jsPDF } from 'jspdf';
 import { FleetDashboard } from './components/FleetDashboard';
 import { 
   Printer, 
@@ -57,8 +53,7 @@ import {
   RefreshCw,
   BookOpen,
   Info,
-  LayoutDashboard,
-  Calendar
+  LayoutDashboard
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -69,10 +64,6 @@ const App: React.FC = () => {
   
   const [view, setView] = useState<'checklist' | 'settings' | 'dashboard'>('checklist');
   const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login'>('items');
-  const [reportPreFilterPrefix, setReportPreFilterPrefix] = useState<string | undefined>();
-  const [reportPreFilterType, setReportPreFilterType] = useState<any | undefined>();
-  const [showReportSelectionModal, setShowReportSelectionModal] = useState(false);
-  const [selectedVehicleForReport, setSelectedVehicleForReport] = useState<string | null>(null);
   const [showDamageMap, setShowDamageMap] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -85,30 +76,8 @@ const App: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [justifications, setJustifications] = useState<Justification[]>([]);
   const [isFetchingDashboardData, setIsFetchingDashboardData] = useState(false);
+  const [lastChecklistData, setLastChecklistData] = useState<{ label: string; status: string; observation?: string }[] | undefined>(undefined);
   const checklistRef = useRef<HTMLDivElement>(null);
-
-  // Sincronização proativa de usuários ao abrir telas de login
-  useEffect(() => {
-    if (showLoginModal || (view === 'settings' && activeTabInSettings === 'login')) {
-      const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
-      if (targetUrl) {
-        setIsSyncing(true);
-        fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`)
-          .then(r => r.ok ? r.json() : null)
-          .then(res => {
-            if (Array.isArray(res) && res.length > 0) {
-              setSettings(prev => {
-                const updated = { ...prev, users: res };
-                localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
-                return updated;
-              });
-            }
-          })
-          .catch(err => console.warn("Erro ao sincronizar usuários proativamente:", err))
-          .finally(() => setIsSyncing(false));
-      }
-    }
-  }, [showLoginModal, view, activeTabInSettings]);
 
   const fetchDashboardData = async () => {
     const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
@@ -136,6 +105,16 @@ const App: React.FC = () => {
     }
   }, [view]);
   
+  useEffect(() => {
+    // Garantir que o usuário não permaneça em uma tela que não tem permissão
+    if (view === 'dashboard' && !hasPermission('reports')) {
+      setView('checklist');
+    }
+    if (view === 'settings' && !hasPermission('settings') && !['manual', 'about'].includes(activeTabInSettings)) {
+      setView('checklist');
+    }
+  }, [view, currentUser]);
+
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('checkviatura_settings');
     if (saved) {
@@ -149,6 +128,29 @@ const App: React.FC = () => {
         if (!parsed.googleSheetUrl || legacyUrls.some(id => parsed.googleSheetUrl?.includes(id))) {
           parsed.googleSheetUrl = FIXED_GOOGLE_SHEET_URL;
         }
+
+        // Sanitização de IDs duplicados
+        if (parsed.stations) {
+          const uniqueStations: Record<string, any> = {};
+          parsed.stations.forEach((s: any) => {
+            const id = s.id || Math.random().toString(36).substring(2, 11);
+            if (!uniqueStations[id]) {
+              uniqueStations[id] = { ...s, id };
+            }
+          });
+          parsed.stations = Object.values(uniqueStations);
+        }
+        if (parsed.vehicles) {
+          const uniqueVehicles: Record<string, any> = {};
+          parsed.vehicles.forEach((v: any) => {
+            const id = v.id || Math.random().toString(36).substring(2, 11);
+            if (!uniqueVehicles[id]) {
+              uniqueVehicles[id] = { ...v, id };
+            }
+          });
+          parsed.vehicles = Object.values(uniqueVehicles);
+        }
+
         return parsed;
       } catch (e) {
         console.error("Failed to parse settings", e);
@@ -214,7 +216,7 @@ const App: React.FC = () => {
     
     return {
       id: crypto.randomUUID(),
-      date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }),
+      date: new Date().toISOString().split('T')[0],
       prefix: '',
       plate: '',
       checklistType: initialFreq,
@@ -242,12 +244,11 @@ const App: React.FC = () => {
         console.log("Iniciando sincronização completa com banco de dados na inicialização...");
         
         // Disparar requisições em paralelo
-        const [settingsRes, usersRes, vehiclesRes, stationsRes, docsRes] = await Promise.all([
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getSettings&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getVehicles&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getDocuments&_t=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null)
+        const [settingsRes, usersRes, vehiclesRes, stationsRes] = await Promise.all([
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getSettings`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getVehicles`).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations`).then(r => r.ok ? r.json() : null).catch(() => null)
         ]);
 
         setSettings(prev => {
@@ -275,11 +276,6 @@ const App: React.FC = () => {
           // 4. Sincronizar Postos
           if (Array.isArray(stationsRes) && stationsRes.length > 0) {
             updated.stations = stationsRes;
-          }
-
-          // 5. Sincronizar Documentos
-          if (Array.isArray(docsRes) && docsRes.length > 0) {
-            updated.documentLinks = docsRes;
           }
 
           localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
@@ -322,6 +318,45 @@ const App: React.FC = () => {
       }));
     }
   }, [currentUser]);
+
+  // Buscar último checklist ao selecionar uma viatura
+  useEffect(() => {
+    if (data.prefix && logs.length > 0) {
+      const vehicleLogs = logs
+        .filter(l => l.prefix === data.prefix)
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      
+      if (vehicleLogs.length > 0) {
+        const lastLog = vehicleLogs[0];
+        try {
+          if (lastLog.fullData) {
+            const parsed = JSON.parse(lastLog.fullData);
+            if (parsed.items) {
+              setLastChecklistData(parsed.items.map((i: any) => ({
+                label: i.label,
+                status: i.status,
+                observation: i.observation
+              })));
+            }
+          } else if (lastLog.itemsDetail) {
+             const itemsDetail = JSON.parse(lastLog.itemsDetail);
+             setLastChecklistData(itemsDetail.map((i: any) => ({
+               label: i.label,
+               status: i.status,
+               observation: i.observation
+             })));
+          }
+        } catch (e) {
+          console.warn("Erro ao processar histórico do checklist:", e);
+          setLastChecklistData(undefined);
+        }
+      } else {
+        setLastChecklistData(undefined);
+      }
+    } else {
+      setLastChecklistData(undefined);
+    }
+  }, [data.prefix, logs]);
 
   const themeColor = settings.headerBgColor || '#b91c1c';
   const printScale = settings.printScale || 1.0;
@@ -477,6 +512,8 @@ const App: React.FC = () => {
       await sheetsService.syncSettings(googleToken, spreadsheetId, settings);
       if (settings.vehicles) await sheetsService.syncVehicles(googleToken, spreadsheetId, settings.vehicles);
       if (settings.stations) await sheetsService.syncStations(googleToken, spreadsheetId, settings.stations);
+      if (settings.sgbs) await sheetsService.syncSgbs(googleToken, spreadsheetId, settings.sgbs);
+      if (settings.gbs) await sheetsService.syncGbs(googleToken, spreadsheetId, settings.gbs);
       if (settings.users) await sheetsService.syncUsers(googleToken, spreadsheetId, settings.users);
       
       console.log("Sincronização com Google Sheets concluída.");
@@ -521,8 +558,9 @@ const App: React.FC = () => {
       settings: JSON.stringify(newSettings),
       vehicles: JSON.stringify(newSettings.vehicles || []),
       stations: JSON.stringify(newSettings.stations || []),
+      sgbs: JSON.stringify(newSettings.sgbs || []),
+      gbs: JSON.stringify(newSettings.gbs || []),
       users: JSON.stringify(newSettings.users || []),
-      documents: JSON.stringify(newSettings.documentLinks || []),
       timestamp: new Date().toISOString()
     };
 
@@ -559,107 +597,59 @@ const App: React.FC = () => {
     setView('checklist');
   };
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanUsername = loginUsername.trim().toLowerCase();
-    
-    if (!cleanUsername || !loginPassword) {
-      alert('Informe usuário e senha.');
-      return;
-    }
-
-    const findUserFromList = (userList: User[]) => {
-      return userList.find(u => 
-        u && u.username && u.username.toLowerCase().trim() === cleanUsername && 
-        u.password && u.password.toString() === loginPassword
-      );
-    };
-
-    setIsSyncing(true);
-    const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
-    let validatedUser = null;
-
-    // Sincronização em tempo real obrigatória
-    if (targetUrl) {
-      try {
-        const res = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`).then(r => r.ok ? r.json() : null);
-        if (Array.isArray(res) && res.length > 0) {
-          setSettings(prev => {
-            const updated = { ...prev, users: res };
-            localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
-            return updated;
-          });
-          validatedUser = findUserFromList(res);
+  const handleGoogleLogin = async () => {
+    try {
+      const result = await googleSignIn();
+      if (result && result.user) {
+        const email = result.user.email?.toLowerCase();
+        // Buscar usuário vinculado por este e-mail
+        const matchedUser = (settings.users || []).find(u => u.email?.toLowerCase() === email);
+        
+        if (matchedUser) {
+          setCurrentUser(matchedUser);
+          setShowLoginModal(false);
+          saveAuditLog('LOGIN_GOOGLE', `Usuário realizou login via Google (${email})`);
         } else {
-          // Se falhar a rede, tentamos cache local
-          validatedUser = findUserFromList(settings.users || []);
+          alert(`ERRO: O e-mail ${email} não está vinculado a nenhum usuário cadastrado.`);
+          googleLogout();
         }
-      } catch (err) {
-        console.warn("Erro na sincronização obrigatória de login:", err);
-        validatedUser = findUserFromList(settings.users || []);
-      } finally {
-        setIsSyncing(false);
       }
+    } catch (err) {
+      console.error("Erro no login Google:", err);
+      alert("Falha ao realizar login com Google.");
     }
+  };
 
-    // Super user legacy check fallback
-    if (!validatedUser && cleanUsername === 'cavalieri' && loginPassword === 'tricolor') {
-      validatedUser = {
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    const user = (settings.users || []).find(u => 
+      u.username.toLowerCase() === loginUsername.toLowerCase() && u.password === loginPassword
+    );
+
+    // Super user legacy check
+    if (!user && loginUsername.toLowerCase() === 'cavalieri' && loginPassword === 'tricolor') {
+      const superUser: User = {
         id: 'master',
         username: 'cavalieri',
         name: 'Administrador Mestre',
         password: 'tricolor',
-        permissions: { 
-          checklist: true, reports: true, settings: true, admin: true, canSign: true,
-          signAsChefeMotoristas: true, signAsCmtProntidao: true, signAsCmtPosto: true, signAsCmtSgb: true
-        }
+        permissions: { checklist: true, reports: true, settings: true, admin: true }
       };
-    }
-
-    if (validatedUser) {
-      if (validatedUser.shouldChangePassword) {
-        const newPass = prompt("Sua senha expirou ou foi solicitada a alteração pelo administrador.\n\nDigite sua NOVA SENHA:", "");
-        if (!newPass || newPass.trim().length < 4) {
-          alert("Aleração de senha cancelada ou senha muito curta. O acesso foi negado.");
-          setIsSyncing(false);
-          return;
-        }
-
-        // Atualizar senha no servidor e localmente
-        try {
-          const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
-          if (rawUrl) {
-            await fetch(rawUrl, {
-              method: 'POST',
-              mode: 'no-cors',
-              body: JSON.stringify({ 
-                action: 'saveUser', 
-                ...validatedUser, 
-                password: newPass.trim(),
-                shouldChangePassword: false 
-              })
-            });
-            validatedUser.password = newPass.trim();
-            validatedUser.shouldChangePassword = false;
-            
-            // Atualizar o settings local também para não deslogar imediatamente se salvar falhar no background
-            setSettings(prev => ({
-              ...prev,
-              users: (prev.users || []).map(u => u.id === validatedUser.id ? validatedUser : u)
-            }));
-          }
-        } catch (err) {
-          console.warn("Erro ao atualizar nova senha:", err);
-        }
-      }
-
-      setCurrentUser(validatedUser);
+      setCurrentUser(superUser);
       setShowLoginModal(false);
       setLoginUsername('');
       setLoginPassword('');
-      saveAuditLog('LOGIN', `Usuário ${validatedUser.username} logado (Validação Remota)`);
+      return;
+    }
+
+    if (user) {
+      setCurrentUser(user);
+      setShowLoginModal(false);
+      setLoginUsername('');
+      setLoginPassword('');
+      saveAuditLog('LOGIN', 'Usuário realizou login com sucesso');
     } else {
-      alert('Usuário ou senha inválidos. Verifique suas credenciais e sua conexão.');
+      alert('Usuário ou senha inválidos');
     }
   };
 
@@ -675,13 +665,32 @@ const App: React.FC = () => {
   // Removido o bloqueio de login obrigatório
   
   const hasPermission = (screen: keyof User['permissions']) => {
-    // Se não há usuário logado (Visitante), permitimos visualizar os menus para que possam ser desbloqueados internamente
-    if (!currentUser) return true;
-    
-    // Superusuario cavalieri tem permissão plena sempre
-    if (currentUser.username.toLowerCase() === 'cavalieri') return true;
+    // Menu Dashboard (reports) agora está liberado para todos os usuários conforme solicitado
+    if (screen === 'reports') return true;
 
+    // Se não há usuário logado (Visitante), restringimos menus críticos
+    if (!currentUser) {
+      if (screen === 'settings' || screen === 'admin') return false;
+      return true; // Checklist e outros podem ser permitidos para Visitantes se não houver bloqueio explícito
+    }
+    
     // Se há usuário logado, respeitamos estritamente suas permissões cadastradas
+    if (screen === 'settings') {
+      return !!(currentUser.permissions.manageStations || 
+               currentUser.permissions.manageVehicles || 
+               currentUser.permissions.manageUsers || 
+               currentUser.permissions.manageItems || 
+               currentUser.permissions.manageImages || 
+               currentUser.permissions.manageStyle || 
+               currentUser.permissions.manageLogs || 
+               currentUser.permissions.manageDatabase || 
+               currentUser.permissions.settings);
+    }
+    
+    if (screen === 'admin') {
+      return !!(currentUser.permissions.viewAudit || currentUser.permissions.admin || currentUser.permissions.manageUsers);
+    }
+    
     return currentUser.permissions[screen];
   };
 
@@ -707,7 +716,7 @@ const App: React.FC = () => {
           setData({ 
             ...importedData, 
             id: crypto.randomUUID(),
-            date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }) // Mantém a data de hoje ao importar
+            date: new Date().toISOString().split('T')[0] // Mantém a data de hoje ao importar
           });
           alert("Modelo importado com sucesso!");
         } else {
@@ -721,7 +730,7 @@ const App: React.FC = () => {
     e.target.value = ''; // Reset input para permitir nova importação do mesmo arquivo se necessário
   };
 
-  const saveLogToGoogleSheets = async (pdfUrl?: string) => {
+  const saveLogToGoogleSheets = async () => {
     const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
     const targetUrl = rawUrl?.trim();
     
@@ -765,14 +774,14 @@ const App: React.FC = () => {
       itemsDetail: JSON.stringify(itemsDetailArray),
       fullData: JSON.stringify(dataForMirror),
       generalObservation: data.generalObservation,
-      screenshot: "",
-      pdfUrl: pdfUrl || "",
-      avariaDianteira: data.vehicleImages[0] || "",
-      avariaTraseira: data.vehicleImages[1] || "",
-      avariaLateralM: data.vehicleImages[2] || "",
-      avariaLateralC: data.vehicleImages[3] || "",
-      avariaSuperior: data.vehicleImages[4] || "",
+      screenshot: "" 
     };
+
+    if (logData.fullData.length > 45000) {
+      console.warn("Payload grande detectado. Otimizando dados...");
+      const optimizedMirror = { ...dataForMirror, vehicleImages: [] };
+      logData.fullData = JSON.stringify(optimizedMirror);
+    }
 
     const targetUrlWithAction = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=saveLog`;
     console.log("Enviando dados para o Google Sheets...", { id: logData.id, size: logData.fullData.length, url: targetUrlWithAction });
@@ -806,11 +815,38 @@ const App: React.FC = () => {
           const result = await response.json();
           if (result.result === 'success') {
             console.log("Log salvo com sucesso no Google Sheets");
+            
+            // Atualizar KM atual da viatura nas configurações globais
+            if (data.prefix && data.km) {
+              const updatedVehicles = (settings.vehicles || []).map(v => {
+                if (v.prefix === data.prefix) {
+                  return { ...v, currentKm: Number(data.km) };
+                }
+                return v;
+              });
+              
+              const updatedSettings = { ...settings, vehicles: updatedVehicles };
+              setSettings(updatedSettings);
+              localStorage.setItem('checkviatura_settings', JSON.stringify(updatedSettings));
+            }
           } else {
             console.error("Erro retornado pelo script:", result.message);
           }
         } else {
           console.log("Log enviado (modo no-cors). Verifique a planilha.");
+          
+          // Fallback para atualizar KM localmente mesmo no modo no-cors
+          if (data.prefix && data.km) {
+            const updatedVehicles = (settings.vehicles || []).map(v => {
+              if (v.prefix === data.prefix) {
+                return { ...v, currentKm: Number(data.km) };
+              }
+              return v;
+            });
+            const updatedSettings = { ...settings, vehicles: updatedVehicles };
+            setSettings(updatedSettings);
+            localStorage.setItem('checkviatura_settings', JSON.stringify(updatedSettings));
+          }
         }
         resolve();
       } catch (err) {
@@ -820,125 +856,39 @@ const App: React.FC = () => {
     });
   };
 
-  const handleDeleteLog = async (logId: string) => {
-    if (!currentUser || currentUser.username.toLowerCase() !== 'cavalieri') {
-      alert("Acesso Negado: Apenas o superusuário cavalieri pode excluir lançamentos.");
-      return;
-    }
-
-    if (!window.confirm("ATENÇÃO: Tem certeza que deseja EXCLUIR permanentemente este lançamento? Esta ação não pode ser desfeita.")) {
-      return;
-    }
-
-    const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
-    if (!rawUrl) {
-      alert("URL do banco de dados não configurada.");
-      return;
-    }
-
-    try {
-      setIsSyncing(true);
-      // Usando o endpoint de Apps Script configurado
-      await fetch(rawUrl, {
-        method: "POST",
-        mode: "no-cors",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({
-          action: "deleteLog",
-          id: logId
-        }),
-      });
-
-      await saveAuditLog('EXCLUSAO_LOG', `Protocolo ${logId} excluído por ${currentUser.username}`);
-      
-      // Atualizar localmente
-      setLogs(prev => prev.filter(l => l.id !== logId));
-      
-      alert("Lançamento excluído com sucesso!");
-      fetchDashboardData();
-    } catch (err) {
-      console.error("Erro ao excluir log:", err);
-      alert("Erro ao excluir log no servidor.");
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const handleResetForm = () => {
-    const initialFreq = 'Diário';
-    const filteredDefaults = settings.defaultItems.filter(i => 
-      i.frequency === initialFreq || i.frequency === 'Ambos'
-    );
-    
-    setData({
-      id: crypto.randomUUID(),
-      date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }),
-      prefix: '',
-      plate: '',
-      checklistType: initialFreq,
-      km: '',
-      vehicleStatus: 'OPERANDO',
-      items: filteredDefaults.map(i => ({ ...i, status: 'PENDING' as ItemStatus, photos: [] })),
-      damages: [],
-      photos: [],
-      vehicleImages: [...settings.vehicleImages],
-      vehicleImageRatios: [...(settings.vehicleImageRatios || INITIAL_VEHICLE_RATIOS)],
-      generalObservation: '',
-      signatureName: currentUser?.name || currentUser?.username || '',
-      signatureRank: currentUser?.rank || 'CONFERENTE'
-    });
-    
-    setShowExportMenu(false);
-    setShowDamageMap(false);
-    setPrintTimestamp('');
-  };
-
   const handleVisualizarPdf = async () => {
-    if (isSaving) return;
-
     if (data.items.some(item => item.status === 'PENDING')) {
-      alert("BLOQUEIO: Existem itens do checklist que ainda não foram marcados. Por favor, revise todos os itens.");
+      alert("BLOQUEIO: Existem itens pendentes.");
       return;
     }
     if (!data.prefix.trim() || !data.plate.trim() || !data.km.trim() || !data.signatureName?.trim()) {
-      alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios para finalizar.");
+      alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios.");
       return;
     }
 
-    // Verificar se já existe lançamento hoje para esta viatura
-    const todayStr = new Date().toLocaleDateString('pt-BR');
+    // Validação de KM não inferior ao atual
+    const vehicle = settings.vehicles?.find(v => v.prefix === data.prefix);
+    if (vehicle && vehicle.currentKm && Number(data.km) < vehicle.currentKm) {
+      alert(`BLOQUEIO: O KM informado (${data.km}) é menor que o KM anterior (${vehicle.currentKm}). Por favor, verifique o odômetro.`);
+      return;
+    }
+
+    // Bloqueio de duplicatas no mesmo dia
     const alreadyDone = logs.some(l => 
       l.prefix === data.prefix && 
-      String(l.date).startsWith(todayStr)
+      new Date(l.date).toLocaleDateString() === new Date().toLocaleDateString()
     );
-
-    if (alreadyDone) {
-      const confirmMultiple = window.confirm(`ATENÇÃO: Já existe um checklist realizado hoje para a viatura ${data.prefix}.\n\nDeseja realizar um NOVO checklist mesmo assim?`);
-      if (!confirmMultiple) return;
-    }
-
-    const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
-    if (data.date > todayIso) {
-      alert("BLOQUEIO: LANÇAMENTOS COM DATA FUTURA NÃO SÃO PERMITIDOS.");
-      return;
-    }
-
-    // Validação de KM - Permitir mesmo KM mas alertar
-    const vehicle = settings.vehicles?.find(v => v.prefix === data.prefix);
-    if (vehicle && vehicle.km && parseInt(data.km) < parseInt(vehicle.km)) {
-      alert(`BLOQUEIO: O KM atual (${data.km}) não pode ser menor que o último KM registrado (${vehicle.km}).`);
-      return;
-    }
     
-    if (vehicle && vehicle.km && parseInt(data.km) === parseInt(vehicle.km)) {
-      const confirmSameKm = window.confirm(`ATENÇÃO: Você informou o MESMO quilômetro do lançamento anterior (${vehicle.km}).\n\nIsso ocorre quando a viatura não se deslocou (Reserva, Baixada ou sem ocorrências).\n\nDeseja continuar com este KM?`);
-      if (!confirmSameKm) return;
+    if (alreadyDone) {
+      alert(`BLOQUEIO: Já existe um checklist realizado hoje para a viatura ${data.prefix}.`);
+      return;
     }
 
-    if (data.date < todayIso) {
+    const today = new Date().toISOString().split('T')[0];
+    if (data.date !== today) {
       const reason = prompt("ESTE CHECKLIST POSSUI DATA RETROATIVA.\n\nPor favor, informe o MOTIVO DO LANÇAMENTO RETROATIVO para fins de auditoria na Folha de Justificativas:", "");
       if (!reason || reason.trim() === "") {
-        alert("BLOQUEIO: É obrigatório informar o motivo para lançamentos com data retroativa (data menor que a atual).");
+        alert("BLOQUEIO: É obrigatório informar o motivo para lançamentos com data retroativa.");
         return;
       }
       
@@ -946,30 +896,30 @@ const App: React.FC = () => {
       const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
       if (rawUrl) {
          try {
-            const jData = {
-              action: "saveJustification",
-              id: crypto.randomUUID(),
-              date: data.date,
-              dateRef: data.date,
-              type: data.checklistType?.toUpperCase() || "GERAL",
-              vehicleType: data.prefix,
-              station: data.station || "",
-              justification: `[LANÇAMENTO RETROATIVO] ${reason}`,
-              author: `${data.signatureRank || ''} ${data.signatureName || ''}`.trim(),
-              authorRank: data.signatureRank || "CONFERENTE",
-              createdAt: new Date().toISOString(),
-              month: data.date.substring(0, 7),
-              status: "SIGNED"
-            };
-            
-            await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=saveJustification`, {
-              method: 'POST',
-              mode: 'no-cors',
-              body: JSON.stringify(jData)
-            });
-            console.log("Justificativa retroativa enviada com sucesso.");
+           const jData = {
+             action: "saveJustification",
+             id: crypto.randomUUID(),
+             date: data.date,
+             dateRef: data.date,
+             type: data.checklistType?.toUpperCase() || "GERAL",
+             vehicleType: data.prefix,
+             station: data.station || "",
+             justification: `[LANÇAMENTO RETROATIVO] ${reason}`,
+             author: `${data.signatureRank || ''} ${data.signatureName || ''}`.trim(),
+             authorRank: data.signatureRank || "CONFERENTE",
+             createdAt: new Date().toISOString(),
+             month: data.date.substring(0, 7),
+             status: "SIGNED"
+           };
+           
+           await fetch(`${rawUrl}${rawUrl.includes('?') ? '&' : '?'}action=saveJustification`, {
+             method: 'POST',
+             mode: 'no-cors',
+             body: JSON.stringify(jData)
+           });
+           console.log("Justificativa retroativa enviada com sucesso.");
          } catch (err) {
-            console.warn("Erro ao enviar justificativa automática:", err);
+           console.warn("Erro ao enviar justificativa automática:", err);
          }
       }
     }
@@ -979,7 +929,6 @@ const App: React.FC = () => {
     setIsSaving(true);
     
     try {
-      console.log("Iniciando processo de finalização...");
       await saveLogToGoogleSheets();
       await saveAuditLog('CHECKLIST_FINALIZADO', `Checklist ${data.checklistType} finalizado para viatura ${data.prefix}`);
       
@@ -988,24 +937,14 @@ const App: React.FC = () => {
         const logToAppend: LogEntry = {
           ...data,
           date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
-          signatureRank: data.signatureRank || 'CONFERENTE',
+          signatureRank: data.signatureRank || '',
           signatureName: data.signatureName || ''
         } as any;
         await sheetsService.appendLog(googleToken, settings.googleSpreadsheetId, logToAppend);
       }
       
       // Atualizar dados do dashboard em background
-      await fetchDashboardData();
-      
-      alert("Checklist FINALIZADO e GRAVADO com sucesso!");
-      
-      // Abrir diálogo de impressão
-      window.print();
-
-      // Após imprimir, perguntar se quer limpar o formulário
-      if (window.confirm("Deseja limpar o formulário para um novo checklist?")) {
-        handleResetForm();
-      }
+      fetchDashboardData();
       
     } catch (err) {
       console.error("Erro no processo de finalização:", err);
@@ -1013,93 +952,11 @@ const App: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
-  };
-
-  const handleSaveReportToDrive = async () => {
-    if (!googleToken) {
-      alert("Conecte sua conta Google primeiro nos ajustes.");
-      return;
-    }
-
-    if (data.items.some(item => item.status === 'PENDING')) {
-      alert("BLOQUEIO: Existem itens pendentes.");
-      return;
-    }
-
-    if (!data.prefix.trim() || !data.plate.trim() || !data.km.trim() || !data.signatureName?.trim()) {
-      alert("DADOS INCOMPLETOS: Prefixo, Placa, KM e Nome do Conferente são obrigatórios.");
-      return;
-    }
-
-    // Verificar se já existe lançamento hoje para esta viatura
-    const todayStr = new Date().toLocaleDateString('pt-BR');
-    const alreadyDone = logs.some(l => 
-      l.prefix === data.prefix && 
-      String(l.date).startsWith(todayStr)
-    );
-
-    if (alreadyDone) {
-      alert(`BLOQUEIO: Já existe um checklist realizado hoje para a viatura ${data.prefix}. Apenas um lançamento por dia é permitido.`);
-      return;
-    }
-
-    setIsSaving(true);
-    try {
-      // 1. Capturar e Gerar PDF (Antes de salvar log para ter o link se necessário)
-      const element = checklistRef.current;
-      if (!element) throw new Error("Elemento do checklist não encontrado");
-
-      // Ocultar elementos que não devem sair no PDF (no-print)
-      const noPrintElements = element.querySelectorAll('.no-print');
-      const originalDisplays = Array.from(noPrintElements).map(el => (el as HTMLElement).style.display);
-      noPrintElements.forEach(el => (el as HTMLElement).style.display = 'none');
-
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff'
-      });
-
-      // Restaurar visibilidade
-      noPrintElements.forEach((el, i) => (el as HTMLElement).style.display = originalDisplays[i]);
-
-      const imgData = canvas.toDataURL('image/jpeg', 0.95);
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      
-      pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
-      const pdfBlob = pdf.output('blob');
-      
-      const fileName = `Checklist_${data.prefix || 'VTR'}_${data.date.replace(/-/g, '')}_${new Date().getTime()}.pdf`;
-      
-      // 2. Enviar para o Drive
-      const fileId = await driveService.uploadFile(googleToken, pdfBlob, fileName, 'application/pdf');
-      const driveUrl = `https://drive.google.com/file/d/${fileId}/view`;
-
-      // 3. Salvar log na planilha (Apps Script + Sheets Autenticado) com o link do PDF
-      await saveLogToGoogleSheets(driveUrl);
-      await saveAuditLog('SAVE_REPORT_DRIVE', `Checklist ${data.checklistType} enviado para Google Drive (VTR: ${data.prefix})`);
-      
-      if (settings.googleSpreadsheetId) {
-        const logToAppend: LogEntry = {
-          ...data,
-          date: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
-          signatureRank: data.signatureRank || 'CONFERENTE',
-          signatureName: data.signatureName || 'VISITANTE'
-        } as any;
-        await sheetsService.appendLog(googleToken, settings.googleSpreadsheetId, logToAppend);
-      }
-      
-      alert(`Protocolo enviado com sucesso para o Google Drive!\nArquivo: ${fileName}\nO link foi registrado na planilha.`);
-      fetchDashboardData();
-    } catch (err) {
-      console.error("Erro na integração Drive:", err);
-      alert("Falha ao salvar no Google Drive. Verifique sua conexão e permissões.");
-    } finally {
-      setIsSaving(false);
-    }
+    
+    // Pequeno atraso para garantir que o loader sumiu antes de abrir o print
+    setTimeout(() => {
+      window.print();
+    }, 300);
   };
 
   const handleOnlySave = async () => {
@@ -1112,15 +969,21 @@ const App: React.FC = () => {
       return;
     }
 
-    // Verificar se já existe lançamento hoje para esta viatura
-    const today = new Date().toLocaleDateString('pt-BR');
+    // Validação de KM não inferior ao atual
+    const vtr = settings.vehicles?.find(v => v.prefix === data.prefix);
+    if (vtr && vtr.currentKm && Number(data.km) < vtr.currentKm) {
+      alert(`BLOQUEIO: O KM informado (${data.km}) é menor que o KM anterior (${vtr.currentKm}). Por favor, verifique o odômetro.`);
+      return;
+    }
+
+    // Bloqueio de duplicatas no mesmo dia
     const alreadyDone = logs.some(l => 
       l.prefix === data.prefix && 
-      String(l.date).startsWith(today)
+      new Date(l.date).toLocaleDateString() === new Date().toLocaleDateString()
     );
-
+    
     if (alreadyDone) {
-      alert(`BLOQUEIO: Já existe um checklist realizado hoje para a viatura ${data.prefix}. Apenas um lançamento por dia é permitido.`);
+      alert(`BLOQUEIO: Já existe um checklist realizado hoje para a viatura ${data.prefix}.`);
       return;
     }
 
@@ -1137,57 +1000,6 @@ const App: React.FC = () => {
   };
 
   const hasVehicleImages = data.vehicleImages.some(img => img && img !== "");
-
-  const normalizeText = (text: string) => String(text || "").trim().toUpperCase().replace(/[-\s]/g, "");
-
-  const globalMaintenanceAlerts = useMemo(() => {
-    const alerts: { vehicle: string, alert: MaintenanceAlert, level: 'critical' | 'warning' }[] = [];
-    
-    settings.vehicles?.forEach(v => {
-      if (!v.alerts) return;
-      
-      // Encontrar último KM registrado nos logs para este veículo
-      const lastLog = logs
-        .filter(l => normalizeText(l.prefix) === normalizeText(v.prefix))
-        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-      
-      const currentKm = lastLog ? parseInt(lastLog.km) : (v.km ? parseInt(v.km) : 0);
-      
-      v.alerts.forEach(a => {
-        if (a.status !== 'ACTIVE') return;
-        
-        // Lógica de KM
-        if (a.type === 'KM' && a.targetKm) {
-          if (currentKm >= a.targetKm) {
-            alerts.push({ vehicle: v.prefix, alert: a, level: 'critical' });
-          } else if (currentKm > 0 && (a.targetKm - currentKm) <= (a.warnKmBefore || 0)) {
-            alerts.push({ vehicle: v.prefix, alert: a, level: 'warning' });
-          }
-        }
-        
-        // Lógica de DATA
-        if (a.type === 'DATE' && a.targetDate) {
-          const today = new Date();
-          today.setHours(0,0,0,0);
-          const target = new Date(a.targetDate);
-          target.setHours(0,0,0,0);
-          
-          if (today.getTime() >= target.getTime()) {
-            alerts.push({ vehicle: v.prefix, alert: a, level: 'critical' });
-          } else {
-            const diffDays = Math.ceil((target.getTime() - today.getTime()) / (1000 * 3600 * 24));
-            if (diffDays <= (a.warnDaysBefore || 0)) {
-              alerts.push({ vehicle: v.prefix, alert: a, level: 'warning' });
-            }
-          }
-        }
-      });
-    });
-    
-    return alerts;
-  }, [settings.vehicles, logs]);
-
-  const criticalAlertsCount = globalMaintenanceAlerts.filter((a) => a.level === 'critical').length;
 
   return (
     <div className="min-h-screen max-w-5xl mx-auto pt-24 pb-4 px-4 sm:px-6 print:pt-0 print:pb-0 print:px-0 transition-all">
@@ -1216,7 +1028,6 @@ const App: React.FC = () => {
             bgColor={settings.headerBgColor}
             vehicleType={data.vehicleType}
             station={data.station}
-            criticalAlertsCount={criticalAlertsCount}
           />
         )}
         <main className="p-4 print:p-2 space-y-4 print:space-y-3">
@@ -1225,17 +1036,10 @@ const App: React.FC = () => {
               settings={settings} 
               currentUser={currentUser}
               onSave={handleSaveSettings} 
-              onClose={() => {
-                setView('checklist');
-                setReportPreFilterPrefix(undefined);
-                setReportPreFilterType(undefined);
-              }} 
-              onDeleteLog={handleDeleteLog}
+              onClose={() => setView('checklist')} 
               onExportModel={handleExportModel}
               onImportModel={handleImportModel}
-              initialTab={activeTabInSettings}
-              initialReportPrefix={reportPreFilterPrefix}
-              initialReportType={reportPreFilterType}
+              initialTab={activeTabInSettings} 
               setCurrentUser={setCurrentUser}
               googleUser={googleUser}
               onGoogleSignIn={handleGoogleSignIn}
@@ -1252,11 +1056,6 @@ const App: React.FC = () => {
               onRefresh={fetchDashboardData}
               isLoading={isFetchingDashboardData}
               onUpdateVehicles={(updatedVehicles) => handleSaveSettings({ ...settings, vehicles: updatedVehicles })}
-              onSaveAuditLog={saveAuditLog}
-              onVehicleReportClick={(prefix) => {
-                setSelectedVehicleForReport(prefix);
-                setShowReportSelectionModal(true);
-              }}
             />
           ) : (
             <>
@@ -1273,8 +1072,14 @@ const App: React.FC = () => {
                       className="w-full border-2 border-gray-100 rounded-xl p-2.5 text-xs font-black uppercase bg-white focus:border-blue-500 outline-none transition-all no-print"
                     >
                       <option value="">TODOS OS POSTOS</option>
-                      {settings.stations?.sort((a,b) => (a.name || '').localeCompare(b.name || '')).map(s => (
-                        <option key={s.id} value={s.name}>{s.name}</option>
+                      {[...(settings.stations || [])].sort((a,b) => {
+                        const nameA = (a.name || '').toUpperCase();
+                        const nameB = (b.name || '').toUpperCase();
+                        if (nameA === 'PB') return -1;
+                        if (nameB === 'PB') return 1;
+                        return nameA.localeCompare(nameB);
+                      }).map((s, idx) => (
+                        <option key={`${s.id}-${idx}`} value={s.name}>{s.name}</option>
                       ))}
                     </select>
                     <div className="hidden print:block text-[10px] font-black uppercase text-gray-400">
@@ -1301,13 +1106,23 @@ const App: React.FC = () => {
                           }
                           const vehicle = settings.vehicles?.find(v => v.prefix === val);
                           if (vehicle) {
+                            // Alerta se já foi realizado o checklist no dia
+                            const alreadyDone = logs.some(l => 
+                              l.prefix === vehicle.prefix && 
+                              new Date(l.date).toLocaleDateString() === new Date().toLocaleDateString()
+                            );
+                            
+                            if (alreadyDone) {
+                              alert(`AVISO: Já existe um checklist realizado hoje para a viatura ${vehicle.prefix}.`);
+                            }
+
                             setData({
                               ...data,
                               prefix: vehicle.prefix,
                               plate: vehicle.plate,
                               vehicleType: vehicle.type,
                               station: vehicle.station,
-                              km: vehicle.km || data.km
+                              km: String(vehicle.currentKm || '')
                             });
                           } else {
                             setData({
@@ -1315,8 +1130,7 @@ const App: React.FC = () => {
                               prefix: '',
                               plate: '',
                               vehicleType: undefined,
-                              station: undefined,
-                              km: ''
+                              station: undefined
                             });
                           }
                         }} 
@@ -1431,7 +1245,14 @@ const App: React.FC = () => {
               )}
 
               <section className="space-y-3">
-                <ChecklistTable items={data.items} onStatusChange={handleStatusChange} onObservationChange={handleObservationChange} onSaveToGeneralNotes={handleSaveToGeneralNotes} onAddPhoto={handleItemPhotoUpload} />
+                <ChecklistTable 
+                  items={data.items} 
+                  lastItems={lastChecklistData}
+                  onStatusChange={handleStatusChange} 
+                  onObservationChange={handleObservationChange} 
+                  onSaveToGeneralNotes={handleSaveToGeneralNotes} 
+                  onAddPhoto={handleItemPhotoUpload} 
+                />
               </section>
 
               {/* Seção de Observações Gerais - Editável (no-print) */}
@@ -1514,13 +1335,15 @@ const App: React.FC = () => {
         </div>
 
         {/* 2. Dashboard */}
-        <button 
-          onClick={() => setView('dashboard')} 
-          className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all shrink-0 ${view === 'dashboard' ? 'bg-blue-50 text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
-        >
-          <LayoutDashboard className="w-5 h-5" />
-          <span className="text-xs font-bold hidden md:inline">Dashboard</span>
-        </button>
+        {hasPermission('reports') && (
+          <button 
+            onClick={() => setView('dashboard')} 
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all shrink-0 ${view === 'dashboard' ? 'bg-blue-50 text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
+          >
+            <LayoutDashboard className="w-5 h-5" />
+            <span className="text-xs font-bold hidden md:inline">Dashboard</span>
+          </button>
+        )}
 
         {view === 'checklist' && hasPermission('checklist') && (
           <>
@@ -1528,23 +1351,11 @@ const App: React.FC = () => {
             
             <button 
               onClick={handleVisualizarPdf} 
-              disabled={isSaving}
-              className={`px-4 py-2 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all active:scale-95 ${isSaving ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} text-white shrink-0`}
+              className={`px-4 py-2 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all active:scale-95 bg-blue-600 text-white hover:bg-blue-700 shrink-0`}
             >
-              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-              <span>{isSaving ? 'SALVANDO...' : 'FINALIZAR'}</span>
+              <CheckCircle2 className="w-4 h-4" />
+              <span>FINALIZAR</span>
             </button>
-
-            {googleToken && (
-               <button 
-                onClick={handleSaveReportToDrive} 
-                className="px-4 py-2 rounded-xl text-xs font-black shadow-lg flex items-center gap-2 transition-all active:scale-95 bg-green-600 text-white hover:bg-green-700 shrink-0"
-                disabled={isSaving}
-              >
-                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cloud className="w-4 h-4" />}
-                <span>SALVAR NO DRIVE</span>
-              </button>
-            )}
             
             <div className="w-px h-6 bg-gray-200 mx-0.5"></div>
             
@@ -1590,13 +1401,15 @@ const App: React.FC = () => {
             <Info className="w-5 h-5" />
           </button>
 
-          <button 
-            onClick={() => { setActiveTabInSettings('login'); setView('settings'); }} 
-            className={`p-2 rounded-xl transition-all shrink-0 ${view === 'settings' && (activeTabInSettings === 'login' || activeTabInSettings === 'admin') ? 'bg-red-50 text-red-600' : 'text-gray-400 hover:bg-gray-50'}`}
-            title="Ajustes"
-          >
-            <SettingsIcon className="w-5 h-5" />
-          </button>
+          {hasPermission('settings') && (
+            <button 
+              onClick={() => { setActiveTabInSettings('login'); setView('settings'); }} 
+              className={`p-2 rounded-xl transition-all shrink-0 ${view === 'settings' && (activeTabInSettings === 'login' || activeTabInSettings === 'admin') ? 'bg-red-50 text-red-600' : 'text-gray-400 hover:bg-gray-50'}`}
+              title="Ajustes"
+            >
+              <SettingsIcon className="w-5 h-5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -1641,81 +1454,30 @@ const App: React.FC = () => {
               </div>
               <button 
                 type="submit" 
-                disabled={isSyncing}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95 uppercase tracking-widest text-xs disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95 uppercase tracking-widest text-xs"
               >
-                {isSyncing ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Validando...
-                  </>
-                ) : "Confirmar Acesso"}
+                Confirmar Acesso
               </button>
-              {isSyncing && (
-                <p className="text-[9px] text-center font-black text-blue-600 animate-pulse uppercase tracking-wider">
-                  Sincronizando com Banco de Dados...
-                </p>
-              )}
+
+              <div className="relative py-2">
+                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-100"></div></div>
+                <div className="relative flex justify-center text-[8px] font-black uppercase tracking-widest"><span className="bg-white px-2 text-gray-300">Ou use sua conta corporativa</span></div>
+              </div>
+
+              <button 
+                type="button"
+                onClick={handleGoogleLogin}
+                className="w-full bg-white border-2 border-gray-100 hover:border-blue-500 hover:bg-blue-50 text-gray-600 font-black py-4 rounded-2xl shadow-sm transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-3 active:scale-95"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                </svg>
+                Entrar com Google
+              </button>
             </form>
-          </div>
-        </div>
-      )}
-
-      {showReportSelectionModal && selectedVehicleForReport && (
-        <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm space-y-6 border-t-4 border-blue-600 animate-in fade-in zoom-in duration-300">
-            <div className="text-center space-y-1">
-              <h2 className="text-xl font-black text-gray-900 uppercase tracking-tighter">Relatórios Viatura {selectedVehicleForReport}</h2>
-              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest text-blue-600">Selecione o relatório desejado</p>
-            </div>
-
-            <div className="space-y-3">
-              <button 
-                onClick={() => {
-                  const vehicle = settings.vehicles?.find(v => v.prefix === selectedVehicleForReport);
-                  const isMoto = vehicle?.type === 'MOTOCICLETA';
-                  setReportPreFilterPrefix(selectedVehicleForReport);
-                  setReportPreFilterType(isMoto ? 'daily_control_motos' : 'daily_control');
-                  setActiveTabInSettings('reports');
-                  setView('settings');
-                  setShowReportSelectionModal(false);
-                }}
-                className="w-full bg-gray-50 hover:bg-blue-50 text-gray-700 hover:text-blue-700 font-bold p-4 rounded-2xl border-2 border-transparent hover:border-blue-100 transition-all flex items-center gap-3 uppercase text-xs"
-              >
-                <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <span>Ficha de Controle Diário</span>
-              </button>
-
-              <button 
-                onClick={() => {
-                  const vehicle = settings.vehicles?.find(v => v.prefix === selectedVehicleForReport);
-                  let type: any = 'weekly_leves';
-                  if (vehicle?.type === 'MOTOCICLETA') type = 'weekly_motos';
-                  if (vehicle?.type === 'AB/AÉREA') type = 'weekly_ab';
-                  
-                  setReportPreFilterPrefix(selectedVehicleForReport);
-                  setReportPreFilterType(type);
-                  setActiveTabInSettings('reports');
-                  setView('settings');
-                  setShowReportSelectionModal(false);
-                }}
-                className="w-full bg-gray-50 hover:bg-indigo-50 text-gray-700 hover:text-indigo-700 font-bold p-4 rounded-2xl border-2 border-transparent hover:border-indigo-100 transition-all flex items-center gap-3 uppercase text-xs"
-              >
-                <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600">
-                  <Calendar className="w-4 h-4" />
-                </div>
-                <span>Ficha Mensal / Semanal</span>
-              </button>
-
-              <button 
-                onClick={() => setShowReportSelectionModal(false)}
-                className="w-full bg-white hover:bg-gray-50 text-gray-400 font-black py-3 rounded-2xl transition-all uppercase tracking-widest text-[10px]"
-              >
-                Cancelar
-              </button>
-            </div>
           </div>
         </div>
       )}

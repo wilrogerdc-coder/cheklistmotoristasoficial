@@ -5,6 +5,7 @@ import { CheckSquare, Camera } from 'lucide-react';
 
 interface ChecklistTableProps {
   items: ChecklistItem[];
+  lastItems?: { label: string; status: string; observation?: string }[];
   onStatusChange: (id: string, status: ItemStatus) => void;
   onObservationChange: (id: string, obs: string) => void;
   onSaveToGeneralNotes: (id: string) => void;
@@ -13,6 +14,7 @@ interface ChecklistTableProps {
 
 export const ChecklistTable: React.FC<ChecklistTableProps> = ({ 
   items, 
+  lastItems,
   onStatusChange, 
   onObservationChange,
   onSaveToGeneralNotes,
@@ -22,16 +24,19 @@ export const ChecklistTable: React.FC<ChecklistTableProps> = ({
     <div className="border rounded-lg bg-white shadow-sm overflow-hidden">
       <div className="divide-y divide-gray-100">
           {/* Header opcional para alinhamento visual */}
-          <div className="bg-gray-100 px-2 py-1 grid grid-cols-[45%_auto_1fr] gap-2 text-[9px] font-bold text-gray-500 uppercase tracking-wider">
+          <div className="bg-gray-100 px-2 py-1 grid grid-cols-[38%_12%_auto_1fr] gap-2 text-[9px] font-bold text-gray-500 uppercase tracking-wider">
             <div>Item</div>
+            <div className="text-center">Anterior</div>
             <div className="w-[68px]">Status</div>
             <div>Observação / Evidência</div>
           </div>
 
-          {items.map((item, index) => (
+          {items.map((item, index) => {
+            const lastData = lastItems?.find(li => li.label === item.label);
+            return (
             <div 
               key={item.id} 
-              className={`px-2 py-0.5 grid grid-cols-[45%_auto_1fr] gap-2 items-center group transition-colors ${
+              className={`px-2 py-0.5 grid grid-cols-[38%_12%_auto_1fr] gap-2 items-center group transition-colors ${
                 index % 2 === 0 ? 'bg-white' : 'bg-gray-50/80'
               } hover:bg-blue-50/30`}
             >
@@ -40,6 +45,24 @@ export const ChecklistTable: React.FC<ChecklistTableProps> = ({
                 <span className="font-semibold text-gray-700 text-[10px] leading-tight block truncate" title={item.label}>
                   {item.label}
                 </span>
+              </div>
+
+              {/* Coluna Histórico: Status Anterior */}
+              <div className="flex justify-center no-print">
+                {lastData ? (
+                  <div 
+                    className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase flex items-center gap-1 ${
+                      lastData.status === 'SN' || lastData.status === 'OK' 
+                        ? 'bg-green-50 text-green-600 border border-green-100' 
+                        : 'bg-red-50 text-red-600 border border-red-100'
+                    }`}
+                    title={lastData.observation ? `Anterior: ${lastData.observation}` : `Anterior: ${lastData.status}`}
+                  >
+                    {lastData.status === 'SN' || lastData.status === 'OK' ? 'OK' : 'CN'}
+                  </div>
+                ) : (
+                  <span className="text-[8px] text-gray-300 font-bold">-</span>
+                )}
               </div>
               
               {/* Coluna 2: Botões (Tamanho fixo para alinhamento perfeito) */}
@@ -100,7 +123,8 @@ export const ChecklistTable: React.FC<ChecklistTableProps> = ({
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
       </div>
     </div>
   );

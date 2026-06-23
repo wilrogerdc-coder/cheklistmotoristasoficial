@@ -21,7 +21,7 @@ function doPost(e) {
       let logSheet = sheet.getSheetByName('LOGS');
       if (!logSheet) {
         logSheet = sheet.insertSheet('LOGS');
-        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'ID PROTOCOLO', 'DADOS COMPLETOS', 'LINK PDF', 'OBSERVACOES', 'DETALHE ITENS', 'AVARIA_DIANTEIRA', 'AVARIA_TRASEIRA', 'AVARIA_LATERAL_M', 'AVARIA_LATERAL_C', 'AVARIA_SUPERIOR']);
+        logSheet.appendRow(['DATA', 'PREFIXO', 'PLACA', 'TIPO', 'KM', 'STATUS', 'CONFERENTE', 'RESUMO ITENS', 'ID PROTOCOLO', 'DADOS COMPLETOS']);
       }
       
       logSheet.appendRow([
@@ -34,48 +34,24 @@ function doPost(e) {
         data.inspector,
         data.itemsStatus,
         data.id,
-        data.fullData,
-        data.pdfUrl || '',
-        data.generalObservation || '',
-        data.itemsDetail || '',
-        data.avariaDianteira || '',
-        data.avariaTraseira || '',
-        data.avariaLateralM || '',
-        data.avariaLateralC || '',
-        data.avariaSuperior || ''
+        data.fullData
       ]);
 
-      // VINCULAÇÃO: Atualizar status e KM na ficha da viatura (Sheet VIATURAS)
-      try {
-        const vSheet = sheet.getSheetByName('VIATURAS');
-        if (vSheet) {
-          const vData = vSheet.getDataRange().getValues();
-          const headers = vData[0];
-          const prefixIdx = headers.indexOf('PREFIXO');
-          const kmIdx = headers.indexOf('ULTIMO_KM'); // Pode precisar ser criado
-          const statusIdx = headers.indexOf('STATUS'); // Pode precisar ser criado
-          const idIdx = headers.indexOf('ULTIMA_CONFERENCIA_ID');
-          
-          let targetRow = -1;
-          for (let i = 1; i < vData.length; i++) {
-            if (vData[i][prefixIdx] == data.prefix) {
-              targetRow = i + 1;
+      // Atualizar KM na planilha de VIATURAS
+      let vSheet = sheet.getSheetByName('VIATURAS');
+      if (vSheet) {
+        let vRows = vSheet.getDataRange().getValues();
+        let vHeaders = vRows[0];
+        let prefixIndex = vHeaders.indexOf('PREFIXO');
+        let kmIndex = vHeaders.indexOf('KM_ATUAL');
+        if (prefixIndex > -1 && kmIndex > -1) {
+          for (let i = 1; i < vRows.length; i++) {
+            if (String(vRows[i][prefixIndex]) === String(data.prefix)) {
+              vSheet.getRange(i + 1, kmIndex + 1).setValue(data.km);
               break;
             }
           }
-          
-          if (targetRow > 0) {
-            if (statusIdx >= 0) vSheet.getRange(targetRow, statusIdx + 1).setValue(data.vehicleStatus);
-            if (kmIdx >= 0) vSheet.getRange(targetRow, kmIdx + 1).setValue(data.km);
-            if (idIdx >= 0) vSheet.getRange(targetRow, idIdx + 1).setValue(data.id);
-            else {
-              // Se não existe a coluna KM ou STATUS, adicionamos no final se houver espaço ou apenas ignoramos
-              // Para garantir a vinculação, vamos garantir que as colunas existam no syncEntities
-            }
-          }
         }
-      } catch (e) {
-        console.warn("Erro ao vincular dados à viatura:", e);
       }
 
       return ContentService.createTextOutput(JSON.stringify({ result: 'success' }))
@@ -99,30 +75,6 @@ function doPost(e) {
       ]);
 
       return ContentService.createTextOutput(JSON.stringify({ result: 'success' }))
-        .setMimeType(ContentService.MimeType.JSON);
-    }
-
-    // AÇÃO: Excluir Lançamento (Apenas Superusuário)
-    if (action === 'deleteLog') {
-      const logSheet = sheet.getSheetByName('LOGS');
-      if (!logSheet) return ContentService.createTextOutput(JSON.stringify({ result: 'error', message: 'Sheet LOGS not found' })).setMimeType(ContentService.MimeType.JSON);
-      
-      const logData = logSheet.getDataRange().getValues();
-      const headers = logData[0];
-      const idIdx = headers.indexOf('ID PROTOCOLO');
-      
-      if (idIdx === -1) return ContentService.createTextOutput(JSON.stringify({ result: 'error', message: 'ID PROTOCOLO column not found' })).setMimeType(ContentService.MimeType.JSON);
-      
-      let deleted = false;
-      for (let i = 1; i < logData.length; i++) {
-        if (logData[i][idIdx] === data.id) {
-          logSheet.deleteRow(i + 1);
-          deleted = true;
-          break;
-        }
-      }
-      
-      return ContentService.createTextOutput(JSON.stringify({ result: deleted ? 'success' : 'not_found' }))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -152,10 +104,12 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    // AÇÃO: Sincronizar Entidades (Viaturas, Postos, Usuários e Configurações)
+    // AÇÃO: Sincronizar Entidades (Viaturas, Postos, SGBs, GBs, Usuários e Configurações)
     if (action === 'syncEntities') {
       const vehicles = JSON.parse(data.vehicles || '[]');
       const stations = JSON.parse(data.stations || '[]');
+      const sgbs = JSON.parse(data.sgbs || '[]');
+      const gbs = JSON.parse(data.gbs || '[]');
       const users = JSON.parse(data.users || '[]');
       
       // Sincronizar Configurações do Sistema
@@ -171,7 +125,7 @@ function doPost(e) {
             'headerBgColor', 'headerLogoUrl1', 'headerLogoUrl2', 
             'printScale', 'defaultItems', 'vehicleImages', 'vehicleImageRatios',
             'reportTitle', 'weeklyLevesTitle', 'weeklyMotosTitle', 'weeklyAbTitle', 'dailyMotosTitle',
-            'watermarkUrl', 'documentLinks', 'stationOrder', 'dashboardCharts'
+            'watermarkUrl', 'settingsPassword', 'documentLinks'
           ];
           keysToSave.forEach(function(key) {
             if (settingsObj[key] !== undefined) {
@@ -191,8 +145,8 @@ function doPost(e) {
       let vSheet = sheet.getSheetByName('VIATURAS');
       if (!vSheet) vSheet = sheet.insertSheet('VIATURAS');
       vSheet.clear();
-      vSheet.appendRow(['ID', 'PREFIXO', 'PLACA', 'TIPO', 'POSTO', 'ULTIMO_KM', 'STATUS', 'ULTIMA_CONFERENCIA_ID', 'ALERTAS']);
-      vehicles.forEach(v => vSheet.appendRow([v.id, v.prefix, v.plate, v.type, v.station || '', v.km || '', v.status || 'OPERANDO', v.lastCheckId || '', JSON.stringify(v.alerts || [])]));
+      vSheet.appendRow(['ID', 'PREFIXO', 'PLACA', 'TIPO', 'POSTO', 'SGB', 'GB', 'KM_ATUAL', 'ALERTAS']);
+      vehicles.forEach(v => vSheet.appendRow([v.id, v.prefix, v.plate, v.type, v.station || '', v.sgb || '', v.gb || '', v.currentKm || 0, JSON.stringify(v.alerts || [])]));
 
       // Sincronizar Postos
       let sSheet = sheet.getSheetByName('POSTOS');
@@ -201,35 +155,26 @@ function doPost(e) {
       sSheet.appendRow(['ID', 'NOME', 'SGB_ID']);
       stations.forEach(s => sSheet.appendRow([s.id, s.name, s.sgbId || '']));
 
+      // Sincronizar SGBs
+      let sgbSheet = sheet.getSheetByName('SGBS');
+      if (!sgbSheet) sgbSheet = sheet.insertSheet('SGBS');
+      sgbSheet.clear();
+      sgbSheet.appendRow(['ID', 'NOME', 'GB_ID']);
+      sgbs.forEach(s => sgbSheet.appendRow([s.id, s.name, s.gbId || '']));
+
+      // Sincronizar GBs
+      let gbSheet = sheet.getSheetByName('GBS');
+      if (!gbSheet) gbSheet = sheet.insertSheet('GBS');
+      gbSheet.clear();
+      gbSheet.appendRow(['ID', 'NOME']);
+      gbs.forEach(g => gbSheet.appendRow([g.id, g.name]));
+
       // Sincronizar Usuários
       let uSheet = sheet.getSheetByName('USUARIOS');
       if (!uSheet) uSheet = sheet.insertSheet('USUARIOS');
       uSheet.clear();
-      uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES', 'FORCE_PASS_CHANGE']);
-      users.forEach(u => uSheet.appendRow([
-        u.id, 
-        u.name || '', 
-        u.username, 
-        u.password || '', 
-        u.rank || '', 
-        JSON.stringify(u.permissions),
-        u.shouldChangePassword ? 'SIM' : 'NAO'
-      ]));
-
-      // Sincronizar Documentos & Links
-      let dSheet = sheet.getSheetByName('DOCUMENTOS');
-      if (!dSheet) dSheet = sheet.insertSheet('DOCUMENTOS');
-      dSheet.clear();
-      dSheet.appendRow(['ID', 'NOME', 'URL', 'CATEGORIA', 'DESCRICAO', 'PARAMETROS']);
-      const docs = JSON.parse(data.documents || '[]');
-      docs.forEach(d => dSheet.appendRow([
-        d.id,
-        d.name,
-        d.url,
-        d.category || 'GERAL',
-        d.description || '',
-        d.params || ''
-      ]));
+      uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES', 'EMAIL']);
+      users.forEach(u => uSheet.appendRow([u.id, u.name || '', u.username, u.password || '', u.rank || '', JSON.stringify(u.permissions), u.email || '']));
 
       return ContentService.createTextOutput(JSON.stringify({ result: 'success', message: 'Sincronização completa' }))
         .setMimeType(ContentService.MimeType.JSON);
@@ -240,7 +185,7 @@ function doPost(e) {
       let uSheet = sheet.getSheetByName('USUARIOS');
       if (!uSheet) {
         uSheet = sheet.insertSheet('USUARIOS');
-        uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES', 'FORCE_PASS_CHANGE']);
+        uSheet.appendRow(['ID', 'NOME', 'USUARIO', 'SENHA', 'RE', 'PERMISSOES', 'EMAIL']);
       }
       
       const rows = uSheet.getDataRange().getValues();
@@ -262,7 +207,7 @@ function doPost(e) {
         data.password || '',
         data.rank || '',
         typeof data.permissions === 'string' ? data.permissions : JSON.stringify(data.permissions || { checklist: true, reports: true, settings: true }),
-        data.shouldChangePassword ? 'SIM' : 'NAO'
+        data.email || ''
       ];
       
       if (rowIndex > 0) {
@@ -287,6 +232,25 @@ function doPost(e) {
       for (let i = 1; i < rows.length; i++) {
         if (rows[i][usernameIndex] === data.username) {
           uSheet.deleteRow(i + 1);
+          break;
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ result: 'success' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // AÇÃO: Excluir Log de Conferência
+    if (action === 'deleteLog') {
+      let logSheet = sheet.getSheetByName('LOGS');
+      if (!logSheet) return ContentService.createTextOutput(JSON.stringify({ result: 'error', message: 'Sheet not found' })).setMimeType(ContentService.MimeType.JSON);
+      
+      const rows = logSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const idIndex = headers.indexOf('ID PROTOCOLO');
+      
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i][idIndex] === data.id) {
+          logSheet.deleteRow(i + 1);
           break;
         }
       }
@@ -331,15 +295,7 @@ function doGet(e) {
           inspector: rawLog['CONFERENTE'],
           itemsStatus: rawLog['RESUMO ITENS'],
           id: rawLog['ID PROTOCOLO'],
-          fullData: rawLog['DADOS COMPLETOS'],
-          pdfUrl: rawLog['LINK PDF'],
-          generalObservation: rawLog['OBSERVACOES'],
-          itemsDetail: rawLog['DETALHE ITENS'],
-          avariaDianteira: rawLog['AVARIA_DIANTEIRA'],
-          avariaTraseira: rawLog['AVARIA_TRASEIRA'],
-          avariaLateralM: rawLog['AVARIA_LATERAL_M'],
-          avariaLateralC: rawLog['AVARIA_LATERAL_C'],
-          avariaSuperior: rawLog['AVARIA_SUPERIOR']
+          fullData: rawLog['DADOS COMPLETOS']
         };
       });
 
@@ -377,7 +333,7 @@ function doGet(e) {
           password: userArr['SENHA'],
           rank: userArr['RE'],
           permissions: permissions,
-          shouldChangePassword: userArr['FORCE_PASS_CHANGE'] === 'SIM'
+          email: userArr['EMAIL'] || ''
         };
       });
 
@@ -490,9 +446,9 @@ function doGet(e) {
           plate: item['PLACA'] || '',
           type: item['TIPO'] || 'LEVE/PESADA',
           station: item['POSTO'] || '',
-          km: item['ULTIMO_KM'] || '',
-          status: item['STATUS'] || 'OPERANDO',
-          lastCheckId: item['ULTIMA_CONFERENCIA_ID'] || '',
+          sgb: item['SGB'] || '',
+          gb: item['GB'] || '',
+          currentKm: Number(item['KM_ATUAL'] || 0),
           alerts: alerts
         };
       });
@@ -523,15 +479,15 @@ function doGet(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    if (action === 'getDocuments') {
-      const dSheet = sheet.getSheetByName('DOCUMENTOS');
-      if (!dSheet) {
+    if (action === 'getSgbs') {
+      const sgbSheet = sheet.getSheetByName('SGBS');
+      if (!sgbSheet) {
         return ContentService.createTextOutput(JSON.stringify([]))
           .setMimeType(ContentService.MimeType.JSON);
       }
-      const rows = dSheet.getDataRange().getValues();
+      const rows = sgbSheet.getDataRange().getValues();
       const headers = rows[0];
-      const docs = rows.slice(1).map(function(row) {
+      const items = rows.slice(1).map(function(row) {
         let item = {};
         headers.forEach((header, i) => {
           item[header] = row[i];
@@ -539,13 +495,32 @@ function doGet(e) {
         return {
           id: item['ID'] || '',
           name: item['NOME'] || '',
-          url: item['URL'] || '',
-          category: item['CATEGORIA'] || 'GERAL',
-          description: item['DESCRICAO'] || '',
-          params: item['PARAMETROS'] || ''
+          gbId: item['GB_ID'] || ''
         };
       });
-      return ContentService.createTextOutput(JSON.stringify(docs))
+      return ContentService.createTextOutput(JSON.stringify(items))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action === 'getGbs') {
+      const gbSheet = sheet.getSheetByName('GBS');
+      if (!gbSheet) {
+        return ContentService.createTextOutput(JSON.stringify([]))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      const rows = gbSheet.getDataRange().getValues();
+      const headers = rows[0];
+      const items = rows.slice(1).map(function(row) {
+        let item = {};
+        headers.forEach((header, i) => {
+          item[header] = row[i];
+        });
+        return {
+          id: item['ID'] || '',
+          name: item['NOME'] || ''
+        };
+      });
+      return ContentService.createTextOutput(JSON.stringify(items))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
