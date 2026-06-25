@@ -1,5 +1,5 @@
 {
-  "name": "Remix: CheckViatura Pro - Auditoria e Gestão atualização",
+  "name": "Remix: Remix: CheckViatura Pro - atualização 2.1",
   "description": "Sistema avançado de checklist de viaturas com sincronização em tempo real com Google Sheets, portal de auditoria e relatórios analíticos.",
   "requestFramePermissions": [
     "camera"

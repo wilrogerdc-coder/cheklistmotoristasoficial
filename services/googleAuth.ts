@@ -1,4 +1,5 @@
 
+
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
 import firebaseConfig from '../firebase-applet-config.json';
@@ -7,6 +8,8 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
+provider.addScope('https://www.googleapis.com/auth/userinfo.email');
+provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
 provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 provider.addScope('https://www.googleapis.com/auth/drive.file');
 
@@ -22,10 +25,8 @@ export const initAuth = (
       if (cachedAccessToken) {
         if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
       } else if (!isSigningIn) {
-        // We need to re-sign in to get a fresh token if the page was refreshed
-        // or clear the state if we don't handle silent refresh here.
-        // For simplicity in this applet, we'll ask for sign-in again if token is lost.
-        cachedAccessToken = null;
+        // We don't have the token in the session, we'll need the user to click login again
+        // or handle persistent tokens if needed. For this app, we'll wait for a manual login.
         if (onAuthFailure) onAuthFailure();
       }
     } else {
@@ -41,7 +42,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error('Failed to get access token from Firebase Auth');
+      throw new Error('Falha ao obter token de acesso do Firebase Auth');
     }
 
     cachedAccessToken = credential.accessToken;
