@@ -26,6 +26,7 @@ import {
   Lock,
   ShieldCheck,
   Shield,
+  Activity,
 } from "lucide-react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
@@ -415,6 +416,7 @@ export const Reports: React.FC<ReportsProps> = ({
   );
   const [prefixSearch, setPrefixSearch] = useState<string>("");
   const [postoFilter, setPostoFilter] = useState<string>("");
+  const [vehicleStatusFilter, setVehicleStatusFilter] = useState<string>("");
   const [bookConfig, setBookConfig] = useState({
     includeDaily: true,
     includeJustifications: true,
@@ -1028,23 +1030,145 @@ export const Reports: React.FC<ReportsProps> = ({
     return Array.from(stations).sort();
   }, [settings.stations, settings.vehicles]);
 
+  const vehicleStatusMap = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        latestOperationalStatus: "OPERANDO" | "RESERVA" | "BAIXADA";
+        hasBaixada: boolean;
+        hasReserva: boolean;
+        hasOperando: boolean;
+        hasNovelty: boolean;
+        hasRegular: boolean;
+        totalLogs: number;
+      }
+    > = {};
+
+    const sortedLogs = [...logs].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+
+    sortedLogs.forEach((log) => {
+      const p = normalizePrefix(log.prefix);
+      if (!p) return;
+      const logMonth = parseLogDateToMonth(log.date);
+      if (monthFilter && logMonth !== monthFilter) return;
+
+      const rawOp = (log.vehicleStatus || "OPERANDO").toUpperCase();
+      const opStatus: "OPERANDO" | "RESERVA" | "BAIXADA" =
+        rawOp === "BAIXADA" || rawOp === "RESERVA" ? rawOp : "OPERANDO";
+
+      if (!map[p]) {
+        map[p] = {
+          latestOperationalStatus: opStatus,
+          hasBaixada: false,
+          hasReserva: false,
+          hasOperando: false,
+          hasNovelty: false,
+          hasRegular: false,
+          totalLogs: 0,
+        };
+      }
+
+      if (opStatus === "BAIXADA") map[p].hasBaixada = true;
+      else if (opStatus === "RESERVA") map[p].hasReserva = true;
+      else map[p].hasOperando = true;
+
+      const itemsStatus = (log.itemsStatus || "").toUpperCase();
+      if (itemsStatus.includes("CN")) {
+        map[p].hasNovelty = true;
+      } else {
+        map[p].hasRegular = true;
+      }
+
+      map[p].totalLogs += 1;
+    });
+
+    return map;
+  }, [logs, monthFilter]);
+
+  const statusCounts = useMemo(() => {
+    let operando = 0;
+    let baixada = 0;
+    let reserva = 0;
+    let ok = 0;
+    let cn = 0;
+
+    uniquePrefixes.forEach((prefix) => {
+      if (postoFilter) {
+        const vehicle = settings.vehicles?.find(
+          (v) => normalizePrefix(v.prefix) === prefix,
+        );
+        if (
+          !vehicle ||
+          normalizePrefix(vehicle.station) !== normalizePrefix(postoFilter)
+        ) {
+          return;
+        }
+      }
+
+      const info = vehicleStatusMap[prefix];
+      if (info) {
+        if (info.hasOperando || (!info.hasBaixada && !info.hasReserva)) operando++;
+        if (info.hasBaixada) baixada++;
+        if (info.hasReserva) reserva++;
+        if (info.hasRegular) ok++;
+        if (info.hasNovelty) cn++;
+      } else {
+        operando++;
+      }
+    });
+
+    return { operando, baixada, reserva, ok, cn };
+  }, [uniquePrefixes, vehicleStatusMap, postoFilter, settings.vehicles]);
+
   const visiblePrefixes = useMemo(() => {
     return uniquePrefixes.filter((prefix) => {
       const matchesSearch =
         !prefixSearch ||
         prefix.includes(normalizePrefix(prefixSearch));
 
-      if (!postoFilter) return matchesSearch;
-      const vehicle = settings.vehicles?.find(
-        (v) => normalizePrefix(v.prefix) === prefix,
-      );
-      return (
-        matchesSearch &&
-        vehicle &&
-        normalizePrefix(vehicle.station) === normalizePrefix(postoFilter)
-      );
+      if (!matchesSearch) return false;
+
+      if (postoFilter) {
+        const vehicle = settings.vehicles?.find(
+          (v) => normalizePrefix(v.prefix) === prefix,
+        );
+        if (
+          !vehicle ||
+          normalizePrefix(vehicle.station) !== normalizePrefix(postoFilter)
+        ) {
+          return false;
+        }
+      }
+
+      if (vehicleStatusFilter) {
+        const info = vehicleStatusMap[prefix];
+        if (vehicleStatusFilter === "OPERANDO") {
+          const isOperando =
+            info?.hasOperando || (!info?.hasBaixada && !info?.hasReserva);
+          if (!isOperando) return false;
+        } else if (vehicleStatusFilter === "BAIXADA") {
+          if (!info?.hasBaixada) return false;
+        } else if (vehicleStatusFilter === "RESERVA") {
+          if (!info?.hasReserva) return false;
+        } else if (vehicleStatusFilter === "OK") {
+          if (!info?.hasRegular) return false;
+        } else if (vehicleStatusFilter === "CN") {
+          if (!info?.hasNovelty) return false;
+        }
+      }
+
+      return true;
     });
-  }, [uniquePrefixes, prefixSearch, postoFilter, settings.vehicles]);
+  }, [
+    uniquePrefixes,
+    prefixSearch,
+    postoFilter,
+    vehicleStatusFilter,
+    vehicleStatusMap,
+    settings.vehicles,
+  ]);
 
   const uniqueMonths = useMemo(() => {
     const months = new Set<string>();
@@ -1084,9 +1208,27 @@ export const Reports: React.FC<ReportsProps> = ({
       const matchesPrefix =
         selectedPrefixes.size === 0 || selectedPrefixes.has(normLogPrefix);
 
-      return matchesMonth && matchesPrefix;
+      if (!matchesMonth || !matchesPrefix) return false;
+
+      if (vehicleStatusFilter) {
+        const opStatus = (log.vehicleStatus || "OPERANDO").toUpperCase();
+        const itemsStatus = (log.itemsStatus || "").toUpperCase();
+
+        if (vehicleStatusFilter === "OPERANDO" && opStatus !== "OPERANDO")
+          return false;
+        if (vehicleStatusFilter === "BAIXADA" && opStatus !== "BAIXADA")
+          return false;
+        if (vehicleStatusFilter === "RESERVA" && opStatus !== "RESERVA")
+          return false;
+        if (vehicleStatusFilter === "CN" && !itemsStatus.includes("CN"))
+          return false;
+        if (vehicleStatusFilter === "OK" && itemsStatus.includes("CN"))
+          return false;
+      }
+
+      return true;
     });
-  }, [logs, monthFilter, selectedPrefixes]);
+  }, [logs, monthFilter, selectedPrefixes, vehicleStatusFilter]);
 
   const togglePrefix = (prefix: string) => {
     const newSelected = new Set(selectedPrefixes);
@@ -2498,9 +2640,12 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-3 border-2 border-black text-[9px] font-black uppercase divide-x-2 divide-black bg-white mb-6">
+        <div className={`grid ${vehicleStatusFilter ? "grid-cols-4" : "grid-cols-3"} border-2 border-black text-[9px] font-black uppercase divide-x-2 divide-black bg-white mb-6`}>
           <div className="px-3 py-2 bg-gray-50">Viatura: <span className="text-blue-700 ml-1">{selectedPrefix}</span></div>
           <div className="px-3 py-2 bg-gray-50">Mês de Referência: <span className="text-blue-700 ml-1">{getMonthLabel(monthFilter).toUpperCase()}</span></div>
+          {vehicleStatusFilter && (
+            <div className="px-3 py-2 bg-gray-50">Status: <span className="text-blue-700 ml-1">{vehicleStatusFilter}</span></div>
+          )}
           <div className="px-3 py-2 bg-gray-50">Emitido em: <span className="text-blue-700 ml-1">{new Date().toLocaleString("pt-BR")}</span></div>
         </div>
 
@@ -2950,6 +3095,68 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   };
 
+  const extractLogNovelties = (log: LogEntry) => {
+    const list: Array<{ label: string; status: string; observation?: string; photos?: string[] }> = [];
+    const seen = new Set<string>();
+
+    // 1. Tentar ler de itemsDetail se existir
+    if (log.itemsDetail) {
+      try {
+        const details = typeof log.itemsDetail === "string" ? JSON.parse(log.itemsDetail) : log.itemsDetail;
+        if (Array.isArray(details)) {
+          details.forEach((d: any) => {
+            const st = String(d?.status || "").trim().toUpperCase();
+            if (st === "CN" || st === "N" || st.includes("COM NOVIDADE") || st === "AVARIA" || st === "DEFEITO") {
+              const label = String(d?.label || d?.description || d?.name || "Item sem descrição").trim();
+              if (label && !seen.has(label.toLowerCase())) {
+                seen.add(label.toLowerCase());
+                list.push({
+                  label,
+                  status: "CN",
+                  observation: d.observation || "",
+                  photos: Array.isArray(d.photos) ? d.photos : [],
+                });
+              }
+            }
+          });
+        }
+      } catch (e) {}
+    }
+
+    // 2. Tentar ler de fullData / getFullData(log)
+    const full = getFullData(log);
+    if (full) {
+      const candidateItems = full.items || full.checklistItems || full.InspectionItems || full.data?.items;
+      if (Array.isArray(candidateItems)) {
+        candidateItems.forEach((d: any) => {
+          const st = String(d?.status || "").trim().toUpperCase();
+          if (st === "CN" || st === "N" || st.includes("COM NOVIDADE") || st === "AVARIA" || st === "DEFEITO") {
+            const label = String(d?.label || d?.description || d?.name || "Item sem descrição").trim();
+            if (label) {
+              const existing = list.find((it) => it.label.toLowerCase() === label.toLowerCase());
+              if (existing) {
+                if (!existing.observation && d.observation) existing.observation = d.observation;
+                if ((!existing.photos || existing.photos.length === 0) && Array.isArray(d.photos)) {
+                  existing.photos = d.photos;
+                }
+              } else {
+                seen.add(label.toLowerCase());
+                list.push({
+                  label,
+                  status: "CN",
+                  observation: d.observation || "",
+                  photos: Array.isArray(d.photos) ? d.photos : [],
+                });
+              }
+            }
+          }
+        });
+      }
+    }
+
+    return list;
+  };
+
   const renderNoveltiesReport = (customPrefix?: string) => {
     const sourceLogs = customPrefix
       ? logs.filter((log) => {
@@ -2960,21 +3167,47 @@ export const Reports: React.FC<ReportsProps> = ({
         })
       : filteredLogs;
 
-    const novelties = sourceLogs.filter(
-      (log) =>
-        String(log.itemsStatus || "").includes("CN") ||
-        (log.generalObservation &&
-          String(log.generalObservation).trim() !== ""),
-    );
+    // Filtrar estritamente checklists que foram marcados com novidade
+    const novelties = sourceLogs
+      .map((log) => {
+        const cnItems = extractLogNovelties(log);
+        return {
+          log,
+          cnItems,
+        };
+      })
+      .filter(({ log, cnItems }) => {
+        // 1. Possui itens efetivamente marcados como CN
+        if (cnItems.length > 0) return true;
+
+        // 2. Ou possui resumo explícito de CN maior que 0 no itemsStatus (ex: "28 SN / 2 CN" ou "1 CN")
+        const statusStr = String(log.itemsStatus || "").trim();
+        const cnMatch = statusStr.match(/(\d+)\s*CN/i);
+        if (cnMatch) {
+          const count = parseInt(cnMatch[1], 10);
+          return count > 0;
+        }
+
+        // Se o status for apenas "CN" (sem ser "0 CN")
+        if (/\bCN\b/i.test(statusStr) && !/\b0\s*CN\b/i.test(statusStr)) {
+          return true;
+        }
+
+        return false;
+      });
 
     let totalCnItems = 0;
-    novelties.forEach((log) => {
-      try {
-        if (log.itemsDetail) {
-          const details = JSON.parse(log.itemsDetail);
-          totalCnItems += details.filter((d: any) => d.status === "CN").length;
+    novelties.forEach(({ log, cnItems }) => {
+      if (cnItems.length > 0) {
+        totalCnItems += cnItems.length;
+      } else {
+        const match = String(log.itemsStatus || "").match(/(\d+)\s*CN/i);
+        if (match) {
+          totalCnItems += parseInt(match[1], 10);
+        } else {
+          totalCnItems += 1;
         }
-      } catch (e) {}
+      }
     });
 
     return (
@@ -2989,7 +3222,7 @@ export const Reports: React.FC<ReportsProps> = ({
               {customPrefix || (selectedPrefixes.size > 0
                 ? Array.from(selectedPrefixes).join(", ")
                 : "Todas as Viaturas")}{" "}
-              | {monthFilter}
+              | {monthFilter || "TODOS"}{vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -3007,7 +3240,7 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
             <div>
               <p className="text-[10px] font-black text-red-500 uppercase">
-                Viaturas com Novidades
+                Checklists com Novidades
               </p>
               <p className="text-xl font-black text-red-900">
                 {novelties.length}
@@ -3030,14 +3263,13 @@ export const Reports: React.FC<ReportsProps> = ({
         </div>
 
         <div className="space-y-6">
-          {novelties.map((log, idx) => {
-            let cnItems: any[] = [];
-            try {
-              if (log.itemsDetail) {
-                const details = JSON.parse(log.itemsDetail);
-                cnItems = details.filter((d: any) => d.status === "CN");
-              }
-            } catch (e) {}
+          {novelties.map(({ log, cnItems }, idx) => {
+            const countItems = cnItems.length > 0
+              ? cnItems.length
+              : (() => {
+                  const m = String(log.itemsStatus || "").match(/(\d+)\s*CN/i);
+                  return m ? parseInt(m[1], 10) : 1;
+                })();
 
             return (
               <div
@@ -3057,13 +3289,13 @@ export const Reports: React.FC<ReportsProps> = ({
                         </span>
                       </h4>
                       <p className="text-[9px] font-bold text-gray-400 uppercase">
-                        {new Date(log.date).toLocaleString("pt-BR")}
+                        {formatDate(log.date)}
                       </p>
                     </div>
                   </div>
                   <div className="text-right">
                     <span className="text-[9px] font-black uppercase text-red-600 bg-red-50 border border-red-100 px-3 py-1 rounded-full">
-                      {cnItems.length} Itens com Avaria
+                      {countItems} {countItems === 1 ? "Item com Novidade" : "Itens com Novidade"}
                     </span>
                   </div>
                 </div>
@@ -3095,33 +3327,88 @@ export const Reports: React.FC<ReportsProps> = ({
                   </div>
                 </div>
 
-                {cnItems.length > 0 && (
+                {cnItems.length > 0 ? (
                   <div className="space-y-2">
-                    <p className="font-black uppercase text-gray-400 text-[8px] tracking-widest">
-                      Detalhamento de Itens "CN"
+                    <p className="font-black uppercase text-gray-400 text-[8px] tracking-widest flex items-center gap-1.5">
+                      <AlertCircle className="w-3 h-3 text-red-600" />
+                      Detalhamento de Itens com Novidade ("CN")
                     </p>
                     <div className="grid grid-cols-1 gap-2">
                       {cnItems.map((d: any, i: number) => (
                         <div
                           key={i}
-                          className="flex flex-col sm:flex-row sm:items-center justify-between bg-red-50/30 p-3 rounded-2xl border border-red-100/50 gap-2"
+                          className="flex flex-col sm:flex-row sm:items-start justify-between bg-red-50/40 hover:bg-red-50/70 p-3 rounded-2xl border border-red-100 gap-2 transition-colors"
                         >
-                          <div className="flex items-center gap-2">
-                            <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
-                            <span className="font-black text-[10px] uppercase text-red-900">
-                              {d.label}
-                            </span>
+                          <div className="space-y-1.5 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[8px] font-black bg-red-600 text-white px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 shadow-xs">
+                                CN
+                              </span>
+                              <span className="font-black text-[10px] uppercase text-red-900">
+                                {d.label}
+                              </span>
+                            </div>
+                            {d.photos && d.photos.length > 0 && (
+                              <div className="flex items-center gap-1.5 pt-1">
+                                {d.photos.map((ph: string, pIdx: number) => (
+                                  <div
+                                    key={pIdx}
+                                    className="w-12 h-12 rounded-xl border border-red-200 overflow-hidden bg-white shadow-xs shrink-0"
+                                  >
+                                    <img
+                                      src={ph}
+                                      alt={`Foto ${d.label}`}
+                                      className="w-full h-full object-cover"
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                           <div className="flex-1 sm:text-right">
-                            <span className="text-[10px] text-red-600 font-medium italic bg-white px-3 py-1 rounded-lg border border-red-50 shadow-sm">
-                              {d.observation || "Sem observação específica"}
+                            <span className="text-[10px] text-red-600 font-medium italic bg-white px-3 py-1 rounded-lg border border-red-50 shadow-xs inline-block">
+                              {d.observation && d.observation.trim() !== ""
+                                ? d.observation
+                                : "Sem observação específica"}
                             </span>
                           </div>
                         </div>
                       ))}
                     </div>
                   </div>
+                ) : (
+                  <div className="bg-amber-50/60 p-3 rounded-xl border border-amber-200/60 text-amber-800 text-[10px] font-bold">
+                    Checklist registrado com novidade no status geral ({log.itemsStatus || "CN"}).
+                  </div>
                 )}
+
+                {(() => {
+                  const full = getFullData(log);
+                  if (full && Array.isArray(full.damages) && full.damages.length > 0) {
+                    return (
+                      <div className="space-y-2 pt-1">
+                        <p className="font-black uppercase text-gray-400 text-[8px] tracking-widest flex items-center gap-1.5">
+                          <AlertCircle className="w-3 h-3 text-orange-500" />
+                          Avarias no Veículo (Croqui de Danos)
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {full.damages.map((dmg: any, dIdx: number) => (
+                            <div
+                              key={dIdx}
+                              className="bg-orange-50/40 p-2.5 rounded-xl border border-orange-100 text-[10px] flex items-center gap-2"
+                            >
+                              <div className="w-1.5 h-1.5 rounded-full bg-orange-500 shrink-0" />
+                              <span className="font-bold text-orange-900 uppercase">
+                                {dmg.description || `Ponto de dano #${dIdx + 1}`}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
 
                 {log.generalObservation && (
                   <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 relative overflow-hidden">
@@ -3199,12 +3486,13 @@ export const Reports: React.FC<ReportsProps> = ({
               Relatório Sintético de Gerenciamento
             </h3>
             <p className="text-xs font-bold text-gray-500 uppercase">
-              Período: {monthFilter} |{" "}
+              Período: {monthFilter || "TODOS"} |{" "}
               {customPrefix
                 ? `Viatura: ${customPrefix}`
                 : selectedPrefixes.size > 0
                   ? `${selectedPrefixes.size} Viaturas Selecionadas`
                   : "Geral"}
+              {vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -3317,7 +3605,7 @@ export const Reports: React.FC<ReportsProps> = ({
                 : selectedPrefixes.size > 0
                   ? `${selectedPrefixes.size} Viaturas Selecionadas`
                   : "Geral"}{" "}
-              | {monthFilter}
+              | {monthFilter || "TODOS"}{vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -3407,7 +3695,7 @@ export const Reports: React.FC<ReportsProps> = ({
               {selectedPrefixes.size > 0
                 ? `${selectedPrefixes.size} Viaturas Selecionadas`
                 : "Geral"}{" "}
-              | {monthFilter} | Status: {statusFilter.toUpperCase()}
+              | {monthFilter || "TODOS"}{vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""} | Status: {statusFilter.toUpperCase()}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -5268,6 +5556,7 @@ export const Reports: React.FC<ReportsProps> = ({
                 onClick={() => {
                   setMonthFilter("");
                   setPostoFilter("");
+                  setVehicleStatusFilter("");
                   setSelectedPrefixes(new Set());
                   setPrefixSearch("");
                   onFetch("", "");
@@ -5281,8 +5570,8 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <div className="lg:col-span-3 space-y-2 relative animate-in fade-in">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="space-y-2 relative animate-in fade-in">
               <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
                 Mês de Referência
               </label>
@@ -5307,7 +5596,7 @@ export const Reports: React.FC<ReportsProps> = ({
               </div>
             </div>
 
-            <div className="lg:col-span-3 space-y-2 relative animate-in fade-in">
+            <div className="space-y-2 relative animate-in fade-in">
               <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
                 Filtrar por Posto
               </label>
@@ -5336,65 +5625,127 @@ export const Reports: React.FC<ReportsProps> = ({
               </div>
             </div>
 
-            <div className="lg:col-span-6 space-y-3">
+            <div className="space-y-2 relative animate-in fade-in">
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
-                  Seleção de Viaturas ({selectedPrefixes.size} selecionadas)
+                  Status das Viaturas
                 </label>
-                <div className="flex gap-2">
-                  <button
-                    onClick={selectAllPrefixes}
-                    className="text-[9px] font-black uppercase text-blue-600 hover:underline animate-fade-in"
-                  >
-                    Selecionar Todas
-                  </button>
-                  <span className="text-gray-300">|</span>
-                  <button
-                    onClick={deselectAllPrefixes}
-                    className="text-[9px] font-black uppercase text-red-600 hover:underline animate-fade-in"
-                  >
-                    Desmarcar Todas
-                  </button>
-                </div>
-              </div>
-
-              <div className="relative mb-3">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Pesquisar viatura na lista..."
-                  value={prefixSearch}
-                  onChange={(e) => setPrefixSearch(e.target.value)}
-                  className="w-full border-2 rounded-2xl p-3 pl-12 text-sm font-bold outline-none focus:border-blue-500 bg-white shadow-sm"
-                />
-              </div>
-
-              <div className="bg-white border-2 rounded-2xl p-4 max-h-48 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 shadow-inner">
-                {visiblePrefixes.map((prefix) => {
-                  const vehicle = settings.vehicles?.find(
-                    (v) => normalizePrefix(v.prefix) === prefix,
-                  );
-                  return (
-                    <button
-                      key={prefix}
-                      onClick={() => togglePrefix(prefix)}
-                      className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase transition-all border-2 text-center truncate ${
-                        selectedPrefixes.has(prefix)
-                          ? "bg-blue-600 border-blue-600 text-white shadow-md font-black"
-                          : "bg-gray-50 border-gray-100 text-gray-400 hover:border-gray-300 font-bold"
-                      }`}
-                      title={vehicle?.station ? `Posto: ${vehicle.station}` : "Sem Posto"}
-                    >
-                      {prefix}
-                    </button>
-                  );
-                })}
-                {visiblePrefixes.length === 0 && (
-                  <div className="col-span-full py-4 text-center text-[10px] font-bold text-gray-400 uppercase">
-                    Nenhuma viatura encontrada com estes filtros.
-                  </div>
+                {vehicleStatusFilter && (
+                  <span className="text-[8px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-black uppercase">
+                    Filtro Ativo
+                  </span>
                 )}
               </div>
+              <div className="relative">
+                <select
+                  value={vehicleStatusFilter}
+                  onChange={(e) => setVehicleStatusFilter(e.target.value)}
+                  className="w-full border-2 rounded-2xl p-3 pr-10 text-sm font-bold outline-none focus:border-blue-500 bg-white shadow-sm appearance-none cursor-pointer"
+                >
+                  <option value="">Todos os Status ({uniquePrefixes.length} VTRs)</option>
+                  <optgroup label="Status Operacional">
+                    <option value="OPERANDO">Operando ({statusCounts.operando} VTRs)</option>
+                    <option value="BAIXADA">Baixada ({statusCounts.baixada} VTRs)</option>
+                    <option value="RESERVA">Reserva ({statusCounts.reserva} VTRs)</option>
+                  </optgroup>
+                  <optgroup label="Situação de Checklist">
+                    <option value="OK">Sem Novidade / Regular ({statusCounts.ok} VTRs)</option>
+                    <option value="CN">Com Novidade / Avarias ({statusCounts.cn} VTRs)</option>
+                  </optgroup>
+                </select>
+                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
+                  <Activity className="w-4 h-4 text-gray-400" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
+                  Seleção de Viaturas ({selectedPrefixes.size} selecionadas de {visiblePrefixes.length})
+                </label>
+                {vehicleStatusFilter && (
+                  <span className="text-[8px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-blue-600 border border-blue-200 uppercase">
+                    Status: {vehicleStatusFilter}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={selectAllPrefixes}
+                  className="text-[9px] font-black uppercase text-blue-600 hover:underline animate-fade-in"
+                >
+                  Selecionar Todas ({visiblePrefixes.length})
+                </button>
+                <span className="text-gray-300">|</span>
+                <button
+                  onClick={deselectAllPrefixes}
+                  className="text-[9px] font-black uppercase text-red-600 hover:underline animate-fade-in"
+                >
+                  Desmarcar Todas
+                </button>
+              </div>
+            </div>
+
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Pesquisar viatura na lista..."
+                value={prefixSearch}
+                onChange={(e) => setPrefixSearch(e.target.value)}
+                className="w-full border-2 rounded-2xl p-3 pl-12 text-sm font-bold outline-none focus:border-blue-500 bg-white shadow-sm"
+              />
+            </div>
+
+            <div className="bg-white border-2 rounded-2xl p-4 max-h-48 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 shadow-inner">
+              {visiblePrefixes.map((prefix) => {
+                const vehicle = settings.vehicles?.find(
+                  (v) => normalizePrefix(v.prefix) === prefix,
+                );
+                const info = vehicleStatusMap[prefix];
+                const opStatus = info?.latestOperationalStatus || "OPERANDO";
+                const isSelected = selectedPrefixes.has(prefix);
+
+                let badgeColor = "bg-green-100 text-green-700";
+                let badgeText = "OP";
+                if (info?.hasBaixada) {
+                  badgeColor = "bg-red-100 text-red-700";
+                  badgeText = "BX";
+                } else if (info?.hasReserva) {
+                  badgeColor = "bg-orange-100 text-orange-700";
+                  badgeText = "RS";
+                }
+
+                return (
+                  <button
+                    key={prefix}
+                    onClick={() => togglePrefix(prefix)}
+                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase transition-all border-2 text-center flex items-center justify-between gap-1.5 ${
+                      isSelected
+                        ? "bg-blue-600 border-blue-600 text-white shadow-md font-black"
+                        : "bg-gray-50 border-gray-100 text-gray-500 hover:border-gray-300 font-bold"
+                    }`}
+                    title={`${prefix} | Posto: ${vehicle?.station ? vehicle.station : "Sem Posto"} | Status: ${opStatus}${info?.hasNovelty ? " (Com Novidade)" : ""}`}
+                  >
+                    <span className="truncate flex-1 text-left">{prefix}</span>
+                    <span
+                      className={`text-[8px] font-black px-1.5 py-0.5 rounded ${
+                        isSelected ? "bg-white/20 text-white" : badgeColor
+                      }`}
+                    >
+                      {badgeText}
+                    </span>
+                  </button>
+                );
+              })}
+              {visiblePrefixes.length === 0 && (
+                <div className="col-span-full py-4 text-center text-[10px] font-bold text-gray-400 uppercase">
+                  Nenhuma viatura encontrada com estes filtros.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -5438,10 +5789,13 @@ export const Reports: React.FC<ReportsProps> = ({
               />
               {isLoading ? "Sincronizando..." : "Sincronizar Dados Agora"}
             </button>
-            {(monthFilter !== "all" || selectedPrefixes.size > 0) && (
+            {(monthFilter !== "all" && monthFilter !== "" || postoFilter !== "" || vehicleStatusFilter !== "" || selectedPrefixes.size > 0) && (
               <button
                 onClick={() => {
-                  setMonthFilter("all");
+                  setMonthFilter("");
+                  setPostoFilter("");
+                  setVehicleStatusFilter("");
+                  setPrefixSearch("");
                   setSelectedPrefixes(new Set());
                 }}
                 className="bg-gray-100 hover:bg-gray-200 text-gray-600 px-8 py-3 rounded-2xl text-[10px] font-black uppercase transition-all active:scale-95"

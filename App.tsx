@@ -57,7 +57,25 @@ import {
 } from 'lucide-react';
 
 const App: React.FC = () => {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    const saved = localStorage.getItem('checkviatura_current_user');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Failed to parse saved user", e);
+      }
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('checkviatura_current_user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('checkviatura_current_user');
+    }
+  }, [currentUser]);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -68,7 +86,6 @@ const App: React.FC = () => {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'checking' | 'online' | 'offline'>('idle');
   const [selectedStationFilter, setSelectedStationFilter] = useState<string>('');
   const [googleUser, setGoogleUser] = useState<any>(null);
@@ -80,12 +97,6 @@ const App: React.FC = () => {
   const [reportConfig, setReportConfig] = useState<{ prefix: string; reportType?: any } | undefined>(undefined);
   const [lastChecklistData, setLastChecklistData] = useState<{ label: string; status: string; observation?: string }[] | undefined>(undefined);
   const checklistRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (currentUser && showLoginModal) {
-      setShowLoginModal(false);
-    }
-  }, [currentUser, showLoginModal]);
 
   const handleViewReport = (prefix: string) => {
     const vehicle = settings.vehicles?.find(v => v.prefix === prefix);
@@ -631,138 +642,58 @@ const App: React.FC = () => {
   };
 
   const handleGoogleLogin = async () => {
-    setIsLoggingIn(true);
     try {
       const result = await googleSignIn();
       if (result && result.user) {
         const email = result.user.email?.toLowerCase();
+        // Buscar usuário vinculado por este e-mail
+        const matchedUser = (settings.users || []).find(u => u.email?.toLowerCase() === email);
         
-        if (!email) {
-          alert("Erro: E-mail não encontrado na conta Google.");
-          googleLogout();
-          setIsLoggingIn(false);
-          return;
-        }
-
-        // 1. Buscar usuário vinculado por este e-mail localmente
-        let matchedUser = (settings.users || []).find(u => {
-          const uEmail = u.email?.toString().toLowerCase().trim();
-          return uEmail === email.trim();
-        });
-        
-        // 2. Se não encontrou localmente, busca lista atualizada do Sheets
-        if (!matchedUser) {
-          const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
-          const usersRes = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`)
-            .then(r => r.ok ? r.json() : null)
-            .catch(() => null);
-          
-          if (Array.isArray(usersRes)) {
-            const updatedSettings = { ...settings, users: usersRes };
-            setSettings(updatedSettings);
-            localStorage.setItem('checkviatura_settings', JSON.stringify(updatedSettings));
-            
-            matchedUser = usersRes.find(u => {
-              const uEmail = u.email?.toString().toLowerCase().trim();
-              return uEmail === email.trim();
-            });
-          }
-        }
-
         if (matchedUser) {
-          // Limpar estados de interface IMEDIATAMENTE
-          setGoogleUser(result.user);
-          const token = await getAccessToken();
-          setGoogleToken(token);
-          
           setCurrentUser(matchedUser);
           setShowLoginModal(false);
-          setIsLoggingIn(false);
-          
           saveAuditLog('LOGIN_GOOGLE', `Usuário realizou login via Google (${email})`);
-          return;
         } else {
-          alert(`ERRO: O e-mail ${email} não está vinculado a nenhum usuário cadastrado na aba USUARIOS.`);
+          alert(`ERRO: O e-mail ${email} não está vinculado a nenhum usuário cadastrado.`);
           googleLogout();
         }
       }
     } catch (err) {
       console.error("Erro no login Google:", err);
-      alert("Falha ao realizar login com Google. Verifique se as chaves de API estão configuradas.");
-    } finally {
-      setIsLoggingIn(false);
+      alert("Falha ao realizar login com Google.");
     }
   };
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoggingIn(true);
-    
-    try {
-      // 1. Tentar validar com usuários já carregados localmente
-      let users = settings.users || [];
-      let user = users.find(u => 
-        u.username?.toString().toLowerCase().trim() === loginUsername.toLowerCase().trim() && 
-        u.password?.toString().trim() === loginPassword.trim()
-      );
+    const user = (settings.users || []).find(u => 
+      u.username.toLowerCase() === loginUsername.toLowerCase() && u.password === loginPassword
+    );
 
-      // 2. Se não encontrou localmente, busca a lista atualizada do Google Sheets (aba USUARIOS)
-      if (!user) {
-        const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
-        const usersRes = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`)
-          .then(r => r.ok ? r.json() : null)
-          .catch(() => null);
-        
-        if (Array.isArray(usersRes)) {
-          // Atualiza o estado local de usuários para futuras validações
-          const updatedSettings = { ...settings, users: usersRes };
-          setSettings(updatedSettings);
-          localStorage.setItem('checkviatura_settings', JSON.stringify(updatedSettings));
-          
-          // Tenta validar novamente com a lista recém-baixada
-          user = usersRes.find(u => 
-            u.username?.toString().toLowerCase().trim() === loginUsername.toLowerCase().trim() && 
-            u.password?.toString().trim() === loginPassword.trim()
-          );
-        }
-      }
+    // Super user legacy check
+    if (!user && loginUsername.toLowerCase() === 'cavalieri' && loginPassword === 'tricolor') {
+      const superUser: User = {
+        id: 'master',
+        username: 'cavalieri',
+        name: 'Administrador Mestre',
+        password: 'tricolor',
+        permissions: { checklist: true, reports: true, settings: true, admin: true }
+      };
+      setCurrentUser(superUser);
+      setShowLoginModal(false);
+      setLoginUsername('');
+      setLoginPassword('');
+      return;
+    }
 
-      // 3. Verificação de Super User Legado
-      if (!user && loginUsername.toLowerCase() === 'cavalieri' && loginPassword === 'tricolor') {
-        const superUser: User = {
-          id: 'master',
-          username: 'cavalieri',
-          name: 'Administrador Mestre',
-          password: 'tricolor',
-          permissions: { checklist: true, reports: true, settings: true, admin: true }
-        };
-        setCurrentUser(superUser);
-        setShowLoginModal(false);
-        setLoginUsername('');
-        setLoginPassword('');
-        setIsLoggingIn(false);
-        return;
-      }
-
-      if (user) {
-        // Limpar estados de interface IMEDIATAMENTE
-        setCurrentUser(user);
-        setShowLoginModal(false);
-        setLoginUsername('');
-        setLoginPassword('');
-        setIsLoggingIn(false);
-        
-        // Registro de log em background
-        saveAuditLog('LOGIN', `Usuário ${user.username} realizou login com sucesso via base de dados`);
-        return;
-      } else {
-        alert('Usuário ou senha inválidos. Verifique se o cadastro está correto na aba USUARIOS da planilha.');
-      }
-    } catch (err) {
-      console.error("Erro no processo de login:", err);
-      alert("Erro ao conectar com o servidor de usuários. Verifique sua conexão.");
-    } finally {
-      setIsLoggingIn(false);
+    if (user) {
+      setCurrentUser(user);
+      setShowLoginModal(false);
+      setLoginUsername('');
+      setLoginPassword('');
+      saveAuditLog('LOGIN', 'Usuário realizou login com sucesso');
+    } else {
+      alert('Usuário ou senha inválidos');
     }
   };
 
@@ -778,33 +709,22 @@ const App: React.FC = () => {
   // Removido o bloqueio de login obrigatório
   
   const hasPermission = (screen: keyof User['permissions']) => {
-    // Menu Dashboard (reports) agora está liberado para todos os usuários conforme solicitado
+    // Menu Dashboard (reports) e Ajustes (settings) liberados para permitir acesso ao sistema
     if (screen === 'reports') return true;
+    if (screen === 'settings') return true;
 
-    // Se não há usuário logado (Visitante), restringimos menus críticos
+    // Se não há usuário logado (Visitante), restringimos admin
     if (!currentUser) {
-      if (screen === 'settings' || screen === 'admin') return false;
+      if (screen === 'admin') return false;
       return true; // Checklist e outros podem ser permitidos para Visitantes se não houver bloqueio explícito
     }
     
     // Se há usuário logado, respeitamos estritamente suas permissões cadastradas
-    if (screen === 'settings') {
-      return !!(currentUser.permissions.manageStations || 
-               currentUser.permissions.manageVehicles || 
-               currentUser.permissions.manageUsers || 
-               currentUser.permissions.manageItems || 
-               currentUser.permissions.manageImages || 
-               currentUser.permissions.manageStyle || 
-               currentUser.permissions.manageLogs || 
-               currentUser.permissions.manageDatabase || 
-               currentUser.permissions.settings);
-    }
-    
     if (screen === 'admin') {
       return !!(currentUser.permissions.viewAudit || currentUser.permissions.admin || currentUser.permissions.manageUsers);
     }
     
-    return currentUser.permissions[screen];
+    return currentUser.permissions[screen] !== false;
   };
 
   const handleExportModel = () => {
@@ -1116,16 +1036,12 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen max-w-5xl mx-auto pt-24 pb-4 px-4 sm:px-6 print:pt-0 print:pb-0 print:px-0 transition-all">
-      {(isSaving || isLoggingIn) && (
-        <div className="fixed inset-0 z-[400] bg-black/70 backdrop-blur-md flex items-center justify-center flex-col text-white gap-4">
+      {isSaving && (
+        <div className="fixed inset-0 z-[200] bg-black/70 backdrop-blur-md flex items-center justify-center flex-col text-white gap-4">
           <Loader2 className="w-12 h-12 animate-spin text-blue-400" />
           <div className="text-center">
-            <h3 className="font-black text-lg uppercase tracking-widest">
-              {isLoggingIn ? 'Autenticando Usuário' : 'Gravando Conferência'}
-            </h3>
-            <p className="text-xs text-blue-200 font-bold opacity-70">
-              {isLoggingIn ? 'Validando credenciais na nuvem...' : 'Sincronizando protocolo digital...'}
-            </p>
+            <h3 className="font-black text-lg uppercase tracking-widest">Gravando Conferência</h3>
+            <p className="text-xs text-blue-200 font-bold opacity-70">Sincronizando protocolo digital...</p>
           </div>
         </div>
       )}
@@ -1522,15 +1438,14 @@ const App: React.FC = () => {
             <Info className="w-5 h-5" />
           </button>
 
-          {hasPermission('settings') && (
-            <button 
-              onClick={() => { setActiveTabInSettings('login'); setView('settings'); }} 
-              className={`p-2 rounded-xl transition-all shrink-0 ${view === 'settings' && (activeTabInSettings === 'login' || activeTabInSettings === 'admin') ? 'bg-red-50 text-red-600' : 'text-gray-400 hover:bg-gray-50'}`}
-              title="Ajustes"
-            >
-              <SettingsIcon className="w-5 h-5" />
-            </button>
-          )}
+          <button 
+            onClick={() => { setActiveTabInSettings('items'); setView('settings'); }} 
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all shrink-0 ${view === 'settings' && activeTabInSettings !== 'manual' && activeTabInSettings !== 'about' ? 'bg-blue-50 text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
+            title="Ajustes"
+          >
+            <SettingsIcon className="w-5 h-5 text-blue-500" />
+            <span className="text-xs font-bold hidden md:inline">Ajustes</span>
+          </button>
         </div>
       </div>
 

@@ -128,6 +128,9 @@ export const Settings: React.FC<SettingsProps> = ({
       return currentUser?.username.toLowerCase() === 'cavalieri';
     }
 
+    // Se não há usuário logado, permitir as configurações do sistema
+    if (!currentUser) return true;
+
     // Mapeamento de abas para permissões (prioridade para permissões granulares)
     const permissions = currentUser?.permissions as any;
     if (permissions) {
@@ -137,8 +140,8 @@ export const Settings: React.FC<SettingsProps> = ({
       if (tabId === 'items' && (permissions.manageItems || permissions.settings)) return true;
       if (tabId === 'images' && (permissions.manageImages || permissions.settings)) return true;
       if (tabId === 'style' && (permissions.manageStyle || permissions.settings)) return true;
-      if (tabId === 'reports' && (permissions.reports)) return true;
-      if (tabId === 'report_editor' && (permissions.reports)) return true;
+      if (tabId === 'reports' && (permissions.reports || permissions.settings)) return true;
+      if (tabId === 'report_editor' && (permissions.reports || permissions.settings)) return true;
     }
 
     return false;
@@ -169,7 +172,7 @@ export const Settings: React.FC<SettingsProps> = ({
   
   const isMasterUser = !!currentUser && currentUser.username.toLowerCase() === 'cavalieri';
   
-  const isSuperUser = !!currentUser && (
+  const isSuperUser = !currentUser || (
                       currentUser.username.toLowerCase() === 'cavalieri' || 
                       currentUser.permissions?.settings === true
                     );
