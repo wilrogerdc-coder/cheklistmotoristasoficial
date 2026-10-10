@@ -75,6 +75,8 @@ interface AuditUser {
   createdAt?: string;
 }
 
+export type TabType = 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login' | 'logs_admin';
+
 interface SettingsProps {
   settings: AppSettings;
   currentUser: User | null;
@@ -82,7 +84,9 @@ interface SettingsProps {
   onClose: () => void;
   onExportModel: () => void;
   onImportModel: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  initialTab?: 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login';
+  initialTab?: TabType;
+  tabTrigger?: number;
+  onTabChange?: (tab: TabType) => void;
   setCurrentUser: (user: User | null) => void;
   googleUser: any;
   onGoogleSignIn: () => void;
@@ -96,8 +100,6 @@ interface SettingsProps {
   };
 }
 
-type TabType = 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login' | 'logs_admin';
-
 export const Settings: React.FC<SettingsProps> = ({ 
   settings, 
   currentUser,
@@ -106,6 +108,8 @@ export const Settings: React.FC<SettingsProps> = ({
   onExportModel,
   onImportModel,
   initialTab = 'items',
+  tabTrigger,
+  onTabChange,
   setCurrentUser,
   googleUser,
   onGoogleSignIn,
@@ -131,25 +135,45 @@ export const Settings: React.FC<SettingsProps> = ({
     // Se não há usuário logado, permitir as configurações do sistema
     if (!currentUser) return true;
 
-    // Mapeamento de abas para permissões (prioridade para permissões granulares)
-    const permissions = currentUser?.permissions as any;
-    if (permissions) {
-      if (tabId === 'stations' && (permissions.manageStations || permissions.settings)) return true;
-      if (tabId === 'vehicles' && (permissions.manageVehicles || permissions.settings)) return true;
-      if (tabId === 'users' && (permissions.manageUsers || permissions.settings)) return true;
-      if (tabId === 'items' && (permissions.manageItems || permissions.settings)) return true;
-      if (tabId === 'images' && (permissions.manageImages || permissions.settings)) return true;
-      if (tabId === 'style' && (permissions.manageStyle || permissions.settings)) return true;
-      if (tabId === 'reports' && (permissions.reports || permissions.settings)) return true;
-      if (tabId === 'report_editor' && (permissions.reports || permissions.settings)) return true;
+    // Gestão de usuários requer permissão específica de usuários ou admin/settings
+    if (tabId === 'users') {
+      const perms = currentUser.permissions as any;
+      return !!(perms?.manageUsers || perms?.settings || perms?.admin);
     }
 
-    return false;
+    const permissions = currentUser?.permissions as any;
+    // Como os Ajustes são liberados no sistema, as abas operacionais são acessíveis por padrão
+    if (!permissions) return true;
+
+    // Bloqueio explícito de settings === false
+    if (permissions.settings === false) return false;
+
+    // Restrições granulares caso estejam explicitamente negadas como false
+    if (tabId === 'stations' && permissions.manageStations === false) return false;
+    if (tabId === 'vehicles' && permissions.manageVehicles === false) return false;
+    if (tabId === 'items' && permissions.manageItems === false) return false;
+    if (tabId === 'images' && permissions.manageImages === false) return false;
+    if (tabId === 'style' && permissions.manageStyle === false) return false;
+    if (tabId === 'reports' && permissions.reports === false) return false;
+    if (tabId === 'report_editor' && permissions.reports === false) return false;
+
+    return true;
   };
 
   useEffect(() => {
     if (!isTabAccessible(activeTab)) {
-      setActiveTab('manual');
+      // Ao acessar os ajustes, nunca exibir a tela manual como padrão
+      const fallbackTab: TabType = isTabAccessible('items') 
+        ? 'items' 
+        : isTabAccessible('vehicles') 
+          ? 'vehicles' 
+          : isTabAccessible('stations') 
+            ? 'stations' 
+            : isTabAccessible('reports') 
+              ? 'reports' 
+              : 'about';
+      setActiveTab(fallbackTab);
+      onTabChange?.(fallbackTab);
     }
   }, [activeTab, currentUser]);
 
@@ -295,8 +319,16 @@ export const Settings: React.FC<SettingsProps> = ({
   const printMirrorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setActiveTab(initialTab);
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
   }, [initialTab]);
+
+  useEffect(() => {
+    if (tabTrigger !== undefined) {
+      setActiveTab(initialTab || 'items');
+    }
+  }, [tabTrigger]);
 
   const hasAttemptedInitialFetch = useRef(false);
 
@@ -837,6 +869,7 @@ export const Settings: React.FC<SettingsProps> = ({
   // Função disparada ao trocar abas
   const handleTabChange = (tabId: typeof activeTab) => {
     setActiveTab(tabId);
+    onTabChange?.(tabId);
   };
 
   const handleAddUser = () => {

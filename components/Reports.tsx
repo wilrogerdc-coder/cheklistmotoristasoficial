@@ -634,6 +634,7 @@ export const Reports: React.FC<ReportsProps> = ({
     {
       date: true,
       prefix: true,
+      vehicleStatus: true,
       plate: true,
       km: true,
       type: true,
@@ -660,6 +661,53 @@ export const Reports: React.FC<ReportsProps> = ({
     String(p || "")
       .replace(/[-\s]/g, "")
       .toUpperCase();
+
+  const getLogVehicleStatus = (
+    log: LogEntry | null | undefined,
+  ): "OPERANDO" | "RESERVA" | "BAIXADA" => {
+    if (!log) return "OPERANDO";
+    const raw = String(log.vehicleStatus || "OPERANDO").toUpperCase().trim();
+    if (raw === "BAIXADA") return "BAIXADA";
+    if (raw === "RESERVA") return "RESERVA";
+    return "OPERANDO";
+  };
+
+  const renderVehicleStatusBadge = (
+    status: "OPERANDO" | "RESERVA" | "BAIXADA" | string | null | undefined,
+    size: "sm" | "md" = "sm",
+  ) => {
+    const norm = String(status || "OPERANDO").toUpperCase().trim();
+    const textSize = size === "sm" ? "text-[8px]" : "text-[9px]";
+    const dotSize = size === "sm" ? "w-1.5 h-1.5" : "w-2 h-2";
+    if (norm === "BAIXADA") {
+      return (
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${textSize} font-black uppercase bg-red-100 text-red-700 border border-red-200 shrink-0`}
+        >
+          <span className={`${dotSize} rounded-full bg-red-600`}></span>
+          Baixada
+        </span>
+      );
+    }
+    if (norm === "RESERVA") {
+      return (
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${textSize} font-black uppercase bg-amber-100 text-amber-700 border border-amber-200 shrink-0`}
+        >
+          <span className={`${dotSize} rounded-full bg-amber-500`}></span>
+          Reserva
+        </span>
+      );
+    }
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${textSize} font-black uppercase bg-emerald-100 text-emerald-700 border border-emerald-200 shrink-0`}
+      >
+        <span className={`${dotSize} rounded-full bg-emerald-600`}></span>
+        Operando
+      </span>
+    );
+  };
 
   const getItemStatusFromLog = (
     log: LogEntry,
@@ -3463,9 +3511,27 @@ export const Reports: React.FC<ReportsProps> = ({
       ok: sourceLogs.filter(
         (l) => !String(l.itemsStatus || "").includes("CN"),
       ).length,
+      operando: sourceLogs.filter(
+        (l) => getLogVehicleStatus(l) === "OPERANDO",
+      ).length,
+      reserva: sourceLogs.filter(
+        (l) => getLogVehicleStatus(l) === "RESERVA",
+      ).length,
+      baixada: sourceLogs.filter(
+        (l) => getLogVehicleStatus(l) === "BAIXADA",
+      ).length,
     };
 
-    const vehiclesMap: Record<string, number> = {};
+    const vehiclesMap: Record<
+      string,
+      {
+        total: number;
+        operando: number;
+        reserva: number;
+        baixada: number;
+        latestStatus: "OPERANDO" | "RESERVA" | "BAIXADA";
+      }
+    > = {};
     const inspectorsMap: Record<string, number> = {};
     const canonicalPrefixes: Record<string, string> = {};
 
@@ -3474,8 +3540,22 @@ export const Reports: React.FC<ReportsProps> = ({
       if (!canonicalPrefixes[norm]) canonicalPrefixes[norm] = l.prefix;
 
       const inspName = getInspector(l);
-      vehiclesMap[norm] = (vehiclesMap[norm] || 0) + 1;
       inspectorsMap[inspName] = (inspectorsMap[inspName] || 0) + 1;
+
+      const st = getLogVehicleStatus(l);
+      if (!vehiclesMap[norm]) {
+        vehiclesMap[norm] = {
+          total: 0,
+          operando: 0,
+          reserva: 0,
+          baixada: 0,
+          latestStatus: st,
+        };
+      }
+      vehiclesMap[norm].total += 1;
+      if (st === "BAIXADA") vehiclesMap[norm].baixada += 1;
+      else if (st === "RESERVA") vehiclesMap[norm].reserva += 1;
+      else vehiclesMap[norm].operando += 1;
     });
 
     return (
@@ -3502,6 +3582,7 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
+        {/* Indicadores Principais de Inspeção */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-blue-50 p-4 rounded-3xl border border-blue-100">
             <p className="text-[9px] font-black text-blue-500 uppercase">
@@ -3533,30 +3614,123 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
+        {/* Indicadores de Status Operacional: Operando, Reserva e Baixada */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase text-gray-400 tracking-wider">
+              Status Operacional da Frota (Registros do Período)
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="bg-emerald-50 p-4 rounded-3xl border border-emerald-100 flex items-center justify-between">
+              <div>
+                <p className="text-[9px] font-black text-emerald-600 uppercase flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
+                  Operando
+                </p>
+                <p className="text-2xl font-black text-emerald-950 mt-1">
+                  {stats.operando}
+                </p>
+              </div>
+              <div className="text-right">
+                <span className="text-[11px] font-black text-emerald-700 bg-emerald-100/80 px-2.5 py-1 rounded-xl">
+                  {stats.total ? ((stats.operando / stats.total) * 100).toFixed(0) : 0}%
+                </span>
+                <p className="text-[8px] font-bold text-emerald-600 uppercase mt-1">
+                  dos checklists
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 p-4 rounded-3xl border border-amber-100 flex items-center justify-between">
+              <div>
+                <p className="text-[9px] font-black text-amber-600 uppercase flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                  Reserva
+                </p>
+                <p className="text-2xl font-black text-amber-950 mt-1">
+                  {stats.reserva}
+                </p>
+              </div>
+              <div className="text-right">
+                <span className="text-[11px] font-black text-amber-700 bg-amber-100/80 px-2.5 py-1 rounded-xl">
+                  {stats.total ? ((stats.reserva / stats.total) * 100).toFixed(0) : 0}%
+                </span>
+                <p className="text-[8px] font-bold text-amber-600 uppercase mt-1">
+                  dos checklists
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-red-50 p-4 rounded-3xl border border-red-100 flex items-center justify-between">
+              <div>
+                <p className="text-[9px] font-black text-red-600 uppercase flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-red-600"></span>
+                  Baixada
+                </p>
+                <p className="text-2xl font-black text-red-950 mt-1">
+                  {stats.baixada}
+                </p>
+              </div>
+              <div className="text-right">
+                <span className="text-[11px] font-black text-red-700 bg-red-100/80 px-2.5 py-1 rounded-xl">
+                  {stats.total ? ((stats.baixada / stats.total) * 100).toFixed(0) : 0}%
+                </span>
+                <p className="text-[8px] font-bold text-red-600 uppercase mt-1">
+                  dos checklists
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="border rounded-2xl overflow-hidden">
-            <div className="bg-gray-100 p-3 text-[10px] font-black uppercase">
-              Uso da Frota (Top 10)
+          <div className="border rounded-2xl overflow-hidden shadow-xs">
+            <div className="bg-gray-100 p-3 text-[10px] font-black uppercase flex items-center justify-between">
+              <span>Uso da Frota & Status (Top 10)</span>
+              <span className="text-[8px] text-gray-500 font-bold">Op / Res / Bx</span>
             </div>
             <table className="w-full text-[10px] text-left">
+              <thead className="bg-gray-50 border-b text-[8px] font-black uppercase text-gray-400">
+                <tr>
+                  <th className="p-2">Viatura</th>
+                  <th className="p-2 text-center">Status</th>
+                  <th className="p-2 text-center text-emerald-600">Op.</th>
+                  <th className="p-2 text-center text-amber-600">Res.</th>
+                  <th className="p-2 text-center text-red-600">Bx.</th>
+                  <th className="p-2 text-right">Total</th>
+                </tr>
+              </thead>
               <tbody className="divide-y">
                 {Object.entries(vehiclesMap)
-                  .sort((a, b) => b[1] - a[1])
+                  .sort((a, b) => b[1].total - a[1].total)
                   .slice(0, 10)
-                  .map(([norm, count]) => (
-                    <tr key={norm}>
+                  .map(([norm, vData]) => (
+                    <tr key={norm} className="hover:bg-gray-50/50">
                       <td className="p-2 font-bold uppercase">
                         {canonicalPrefixes[norm]}
                       </td>
+                      <td className="p-2 text-center whitespace-nowrap">
+                        {renderVehicleStatusBadge(vData.latestStatus, "sm")}
+                      </td>
+                      <td className="p-2 text-center font-bold text-emerald-700">
+                        {vData.operando}
+                      </td>
+                      <td className="p-2 text-center font-bold text-amber-700">
+                        {vData.reserva}
+                      </td>
+                      <td className="p-2 text-center font-bold text-red-700">
+                        {vData.baixada}
+                      </td>
                       <td className="p-2 text-right font-black text-blue-600">
-                        {count}
+                        {vData.total}
                       </td>
                     </tr>
                   ))}
               </tbody>
             </table>
           </div>
-          <div className="border rounded-2xl overflow-hidden">
+          <div className="border rounded-2xl overflow-hidden shadow-xs">
             <div className="bg-gray-100 p-3 text-[10px] font-black uppercase">
               Atividade por Conferente (Top 10)
             </div>
@@ -3566,7 +3740,7 @@ export const Reports: React.FC<ReportsProps> = ({
                   .sort((a, b) => b[1] - a[1])
                   .slice(0, 10)
                   .map(([name, count]) => (
-                    <tr key={name}>
+                    <tr key={name} className="hover:bg-gray-50/50">
                       <td className="p-2 font-bold uppercase">{name}</td>
                       <td className="p-2 text-right font-black text-green-600">
                         {count}
@@ -3590,6 +3764,12 @@ export const Reports: React.FC<ReportsProps> = ({
           return matchPrefix && matchMonth;
         })
       : filteredLogs;
+
+    const opCount = listToRender.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
+    const resCount = listToRender.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
+    const bxCount = listToRender.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
+    const snCount = listToRender.filter((l) => !String(l.itemsStatus || "").includes("CN")).length;
+    const cnCount = listToRender.filter((l) => String(l.itemsStatus || "").includes("CN")).length;
 
     return (
       <div className="space-y-6">
@@ -3615,27 +3795,59 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        <div className="overflow-x-auto border rounded-2xl">
+        {/* Resumo de Status Operacional e Conformidade */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+          <div className="bg-gray-50 p-3 rounded-2xl border border-gray-200">
+            <p className="text-[9px] font-black uppercase text-gray-500">Total Registros</p>
+            <p className="text-xl font-black text-gray-900">{listToRender.length}</p>
+          </div>
+          <div className="bg-emerald-50 p-3 rounded-2xl border border-emerald-200">
+            <p className="text-[9px] font-black uppercase text-emerald-600">Operando</p>
+            <p className="text-xl font-black text-emerald-900">{opCount}</p>
+          </div>
+          <div className="bg-amber-50 p-3 rounded-2xl border border-amber-200">
+            <p className="text-[9px] font-black uppercase text-amber-600">Reserva</p>
+            <p className="text-xl font-black text-amber-900">{resCount}</p>
+          </div>
+          <div className="bg-red-50 p-3 rounded-2xl border border-red-200">
+            <p className="text-[9px] font-black uppercase text-red-600">Baixada</p>
+            <p className="text-xl font-black text-red-900">{bxCount}</p>
+          </div>
+          <div className="bg-green-50 p-3 rounded-2xl border border-green-200">
+            <p className="text-[9px] font-black uppercase text-green-600">SN (Conforme)</p>
+            <p className="text-xl font-black text-green-900">{snCount}</p>
+          </div>
+          <div className="bg-rose-50 p-3 rounded-2xl border border-rose-200">
+            <p className="text-[9px] font-black uppercase text-rose-600">CN (Avarias)</p>
+            <p className="text-xl font-black text-rose-900">{cnCount}</p>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto border rounded-2xl shadow-xs">
           <table className="w-full text-[9px] text-left border-collapse">
             <thead className="bg-gray-100 font-black uppercase text-gray-400 border-b sticky top-0">
               <tr>
                 <th className="p-2">Data/Hora</th>
                 <th className="p-2">Viatura</th>
+                <th className="p-2">Status VTR</th>
                 <th className="p-2">KM</th>
                 <th className="p-2">Tipo</th>
                 <th className="p-2">Conferente</th>
-                <th className="p-2">Status</th>
+                <th className="p-2">Conformidade</th>
                 <th className="p-2">Obs.</th>
               </tr>
             </thead>
             <tbody className="divide-y bg-white">
               {listToRender.map((log) => (
-                <tr key={log.id} className="hover:bg-gray-50">
+                <tr key={log.id} className="hover:bg-gray-50/50">
                   <td className="p-2 whitespace-nowrap">
                     {new Date(log.date).toLocaleString("pt-BR")}
                   </td>
                   <td className="p-2 font-bold uppercase">{log.prefix}</td>
-                  <td className="p-2">{log.km}</td>
+                  <td className="p-2 whitespace-nowrap">
+                    {renderVehicleStatusBadge(getLogVehicleStatus(log))}
+                  </td>
+                  <td className="p-2 font-mono">{log.km}</td>
                   <td className="p-2 uppercase">{log.checklistType}</td>
                   <td className="p-2 uppercase font-medium break-words min-w-[150px]">
                     {getInspector(log)}
@@ -3661,11 +3873,12 @@ export const Reports: React.FC<ReportsProps> = ({
     const columns = [
       { id: "date", label: "Data/Hora" },
       { id: "prefix", label: "Viatura" },
+      { id: "vehicleStatus", label: "Status VTR (Op/Res/Bx)" },
       { id: "plate", label: "Placa" },
       { id: "km", label: "KM" },
       { id: "type", label: "Tipo" },
       { id: "inspector", label: "Conferente" },
-      { id: "status", label: "Status" },
+      { id: "status", label: "Conformidade" },
       { id: "obs", label: "Observações" },
       { id: "id", label: "Protocolo" },
       { id: "details", label: "Detalhes Itens" },
@@ -3682,6 +3895,10 @@ export const Reports: React.FC<ReportsProps> = ({
       if (statusFilter === "cn") return String(status).includes("CN");
       return true;
     });
+
+    const fullOpCount = filteredByStatus.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
+    const fullResCount = filteredByStatus.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
+    const fullBxCount = filteredByStatus.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
 
     return (
       <div className="space-y-6">
@@ -3727,41 +3944,67 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <p className="text-[10px] font-black uppercase text-gray-400">
-              Filtrar Status:
-            </p>
-            <div className="flex bg-gray-100 p-1 rounded-xl border">
-              {(["all", "ok", "cn"] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setStatusFilter(s)}
-                  className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
-                    statusFilter === s
-                      ? "bg-white text-blue-600 shadow-sm"
-                      : "text-gray-400 hover:text-gray-600"
-                  }`}
-                >
-                  {s === "all" ? "Todos" : s.toUpperCase()}
-                </button>
-              ))}
+          <div className="flex flex-wrap items-center justify-between gap-4 bg-gray-50 p-3 rounded-2xl border">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-black uppercase text-gray-400 mr-1">
+                Registros:
+              </span>
+              <span className="bg-white border text-gray-700 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase shadow-xs">
+                Total: {filteredByStatus.length}
+              </span>
+              <span className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase flex items-center gap-1 shadow-xs">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+                Operando: {fullOpCount}
+              </span>
+              <span className="bg-amber-50 border border-amber-200 text-amber-800 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase flex items-center gap-1 shadow-xs">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                Reserva: {fullResCount}
+              </span>
+              <span className="bg-red-50 border border-red-200 text-red-800 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase flex items-center gap-1 shadow-xs">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-600"></span>
+                Baixada: {fullBxCount}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <p className="text-[10px] font-black uppercase text-gray-400">
+                Filtrar Status:
+              </p>
+              <div className="flex bg-gray-100 p-1 rounded-xl border">
+                {(["all", "ok", "cn"] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setStatusFilter(s)}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
+                      statusFilter === s
+                        ? "bg-white text-blue-600 shadow-sm"
+                        : "text-gray-400 hover:text-gray-600"
+                    }`}
+                  >
+                    {s === "all" ? "Todos" : s.toUpperCase()}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="overflow-x-auto border rounded-2xl">
+        <div className="overflow-x-auto border rounded-2xl shadow-xs">
           <table className="w-full text-[9px] text-left border-collapse">
             <thead className="bg-gray-100 font-black uppercase text-gray-400 border-b sticky top-0">
               <tr>
                 {visibleColumns.date && <th className="p-2">Data/Hora</th>}
                 {visibleColumns.prefix && <th className="p-2">Viatura</th>}
+                {visibleColumns.vehicleStatus && (
+                  <th className="p-2">Status VTR</th>
+                )}
                 {visibleColumns.plate && <th className="p-2">Placa</th>}
                 {visibleColumns.km && <th className="p-2">KM</th>}
                 {visibleColumns.type && <th className="p-2">Tipo</th>}
                 {visibleColumns.inspector && (
                   <th className="p-2">Conferente</th>
                 )}
-                {visibleColumns.status && <th className="p-2">Status</th>}
+                {visibleColumns.status && <th className="p-2">Conformidade</th>}
                 {visibleColumns.obs && <th className="p-2">Obs.</th>}
                 {visibleColumns.id && <th className="p-2">Protocolo</th>}
                 {visibleColumns.details && <th className="p-2">Detalhes</th>}
@@ -3770,7 +4013,7 @@ export const Reports: React.FC<ReportsProps> = ({
             </thead>
             <tbody className="divide-y bg-white">
               {filteredByStatus.map((log) => (
-                <tr key={log.id} className="hover:bg-gray-50">
+                <tr key={log.id} className="hover:bg-gray-50/50">
                   {visibleColumns.date && (
                     <td className="p-2 whitespace-nowrap">
                       {new Date(log.date).toLocaleString("pt-BR")}
@@ -3779,10 +4022,15 @@ export const Reports: React.FC<ReportsProps> = ({
                   {visibleColumns.prefix && (
                     <td className="p-2 font-bold uppercase">{log.prefix}</td>
                   )}
+                  {visibleColumns.vehicleStatus && (
+                    <td className="p-2 whitespace-nowrap">
+                      {renderVehicleStatusBadge(getLogVehicleStatus(log))}
+                    </td>
+                  )}
                   {visibleColumns.plate && (
                     <td className="p-2 font-mono uppercase">{log.plate}</td>
                   )}
-                  {visibleColumns.km && <td className="p-2">{log.km}</td>}
+                  {visibleColumns.km && <td className="p-2 font-mono">{log.km}</td>}
                   {visibleColumns.type && (
                     <td className="p-2 uppercase">{log.checklistType}</td>
                   )}
@@ -3857,6 +4105,10 @@ export const Reports: React.FC<ReportsProps> = ({
       a[0].localeCompare(b[0]),
     );
 
+    const totalOpLogs = filteredLogs.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
+    const totalResLogs = filteredLogs.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
+    const totalBxLogs = filteredLogs.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
+
     return (
       <div className="space-y-8">
         <div className="flex justify-between items-center border-b pb-4 print:pb-2">
@@ -3865,10 +4117,11 @@ export const Reports: React.FC<ReportsProps> = ({
               Relatório Mensal Agrupado por Viatura
             </h3>
             <p className="text-xs font-bold text-gray-500 uppercase">
-              Mês: {monthFilter} |{" "}
+              Mês: {monthFilter || "TODOS"} |{" "}
               {selectedPrefixes.size > 0
                 ? `${selectedPrefixes.size} Viaturas Selecionadas`
                 : "Todas as Viaturas"}
+              {vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -3878,66 +4131,112 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
+        {/* Resumo Geral de Status da Frota no Mês */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3">
+            <p className="text-[9px] font-black uppercase text-blue-600">Viaturas Agrupadas</p>
+            <p className="text-xl font-black text-blue-900">{sortedGroups.length}</p>
+          </div>
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3">
+            <p className="text-[9px] font-black uppercase text-emerald-600">Total Operando</p>
+            <p className="text-xl font-black text-emerald-900">{totalOpLogs} dias/logs</p>
+          </div>
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3">
+            <p className="text-[9px] font-black uppercase text-amber-600">Total Reserva</p>
+            <p className="text-xl font-black text-amber-900">{totalResLogs} dias/logs</p>
+          </div>
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-3">
+            <p className="text-[9px] font-black uppercase text-red-600">Total Baixada</p>
+            <p className="text-xl font-black text-red-900">{totalBxLogs} dias/logs</p>
+          </div>
+        </div>
+
         {sortedGroups.length === 0 ? (
           <div className="text-center py-20 text-gray-400 font-black uppercase">
             Nenhum dado encontrado para o período.
           </div>
         ) : (
           <div className="space-y-10">
-            {sortedGroups.map(([norm, group]) => (
-              <div key={norm} className="space-y-4 print:break-inside-avoid">
-                <div className="bg-gray-900 text-white px-6 py-3 rounded-2xl flex justify-between items-center shadow-lg">
-                  <h4 className="font-black uppercase tracking-widest text-sm">
-                    Viatura: {group.canonicalPrefix}
-                  </h4>
-                  <span className="text-[10px] font-bold opacity-70 uppercase">
-                    {group.logs.length} Inspeções no mês
-                  </span>
-                </div>
+            {sortedGroups.map(([norm, group]) => {
+              const groupOp = group.logs.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
+              const groupRes = group.logs.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
+              const groupBx = group.logs.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
+              const latestLog = group.logs[group.logs.length - 1];
+              const latestStatus = getLogVehicleStatus(latestLog);
 
-                <div className="overflow-x-auto border rounded-2xl shadow-sm">
-                  <table className="w-full text-[10px] text-left border-collapse">
-                    <thead className="bg-gray-50 font-black uppercase text-gray-400 border-b">
-                      <tr>
-                        <th className="p-3">Data</th>
-                        <th className="p-3">KM</th>
-                        <th className="p-3">Tipo</th>
-                        <th className="p-3">Conferente</th>
-                        <th className="p-3">Status</th>
-                        <th className="p-3">Observações</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y bg-white">
-                      {group.logs.map((log) => (
-                        <tr
-                          key={log.id}
-                          className="hover:bg-gray-50 transition-colors"
-                        >
-                          <td className="p-3 font-bold">
-                            {new Date(log.date).toLocaleDateString("pt-BR")}
-                          </td>
-                          <td className="p-3 font-mono">{log.km}</td>
-                          <td className="p-3 uppercase">{log.checklistType}</td>
-                          <td className="p-3 uppercase font-medium">
-                            {getInspector(log)}
-                          </td>
-                          <td className="p-3">
-                            <span
-                              className={`px-2 py-1 rounded-full font-black uppercase text-[9px] ${String(log.itemsStatus || "").includes("CN") ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}
-                            >
-                              {log.itemsStatus || "SN"}
-                            </span>
-                          </td>
-                          <td className="p-3 italic text-gray-500 max-w-[200px] truncate">
-                            {log.generalObservation || "-"}
-                          </td>
+              return (
+                <div key={norm} className="space-y-4 print:break-inside-avoid">
+                  <div className="bg-gray-900 text-white px-6 py-3.5 rounded-2xl flex flex-wrap justify-between items-center gap-3 shadow-lg">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <h4 className="font-black uppercase tracking-widest text-sm">
+                        Viatura: {group.canonicalPrefix}
+                      </h4>
+                      {renderVehicleStatusBadge(latestStatus, "md")}
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap text-[10px] font-bold uppercase">
+                      <span className="bg-emerald-800/60 border border-emerald-500/40 text-emerald-200 px-2.5 py-1 rounded-lg">
+                        Operando: {groupOp}d
+                      </span>
+                      <span className="bg-amber-800/60 border border-amber-500/40 text-amber-200 px-2.5 py-1 rounded-lg">
+                        Reserva: {groupRes}d
+                      </span>
+                      <span className="bg-red-800/60 border border-red-500/40 text-red-200 px-2.5 py-1 rounded-lg">
+                        Baixada: {groupBx}d
+                      </span>
+                      <span className="opacity-75 bg-gray-800 px-2.5 py-1 rounded-lg">
+                        {group.logs.length} Inspeções
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto border rounded-2xl shadow-sm">
+                    <table className="w-full text-[10px] text-left border-collapse">
+                      <thead className="bg-gray-50 font-black uppercase text-gray-400 border-b">
+                        <tr>
+                          <th className="p-3">Data</th>
+                          <th className="p-3">Status VTR</th>
+                          <th className="p-3">KM</th>
+                          <th className="p-3">Tipo</th>
+                          <th className="p-3">Conferente</th>
+                          <th className="p-3">Conformidade</th>
+                          <th className="p-3">Observações</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y bg-white">
+                        {group.logs.map((log) => (
+                          <tr
+                            key={log.id}
+                            className="hover:bg-gray-50 transition-colors"
+                          >
+                            <td className="p-3 font-bold whitespace-nowrap">
+                              {new Date(log.date).toLocaleDateString("pt-BR")}
+                            </td>
+                            <td className="p-3 whitespace-nowrap">
+                              {renderVehicleStatusBadge(getLogVehicleStatus(log))}
+                            </td>
+                            <td className="p-3 font-mono">{log.km}</td>
+                            <td className="p-3 uppercase">{log.checklistType}</td>
+                            <td className="p-3 uppercase font-medium">
+                              {getInspector(log)}
+                            </td>
+                            <td className="p-3">
+                              <span
+                                className={`px-2 py-1 rounded-full font-black uppercase text-[9px] ${String(log.itemsStatus || "").includes("CN") ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}
+                              >
+                                {log.itemsStatus || "SN"}
+                              </span>
+                            </td>
+                            <td className="p-3 italic text-gray-500 max-w-[200px] truncate">
+                              {log.generalObservation || "-"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -3945,6 +4244,23 @@ export const Reports: React.FC<ReportsProps> = ({
   };
 
   const renderHistoryReport = () => {
+    const historyLogs = filteredLogs.filter(
+      (l) =>
+        !prefixSearch ||
+        String(l.prefix)
+          .toLowerCase()
+          .includes(prefixSearch.toLowerCase()) ||
+        String(l.plate)
+          .toLowerCase()
+          .includes(prefixSearch.toLowerCase()),
+    );
+
+    const histOpCount = historyLogs.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
+    const histResCount = historyLogs.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
+    const histBxCount = historyLogs.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
+    const histSnCount = historyLogs.filter((l) => !String(l.itemsStatus || "").includes("CN")).length;
+    const histCnCount = historyLogs.filter((l) => String(l.itemsStatus || "").includes("CN")).length;
+
     return (
       <div className="space-y-6">
         <div className="flex justify-between items-center border-b pb-4 print:pb-2">
@@ -3957,7 +4273,8 @@ export const Reports: React.FC<ReportsProps> = ({
               {selectedPrefixes.size > 0
                 ? `${selectedPrefixes.size} Viaturas Selecionadas`
                 : "Geral"}{" "}
-              | {monthFilter}
+              | {monthFilter || "TODOS"}
+              {vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
             </p>
           </div>
           <div className="flex items-center gap-2 no-print">
@@ -3972,6 +4289,34 @@ export const Reports: React.FC<ReportsProps> = ({
             <p className="text-[10px] font-black uppercase text-gray-400">
               Página <span className="page-number"></span>
             </p>
+          </div>
+        </div>
+
+        {/* Resumo de Status Operacional e Auditoria */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+          <div className="bg-gray-50 p-3 rounded-2xl border border-gray-200">
+            <p className="text-[9px] font-black uppercase text-gray-500">Total Histórico</p>
+            <p className="text-xl font-black text-gray-900">{historyLogs.length}</p>
+          </div>
+          <div className="bg-emerald-50 p-3 rounded-2xl border border-emerald-200">
+            <p className="text-[9px] font-black uppercase text-emerald-600">Operando</p>
+            <p className="text-xl font-black text-emerald-900">{histOpCount}</p>
+          </div>
+          <div className="bg-amber-50 p-3 rounded-2xl border border-amber-200">
+            <p className="text-[9px] font-black uppercase text-amber-600">Reserva</p>
+            <p className="text-xl font-black text-amber-900">{histResCount}</p>
+          </div>
+          <div className="bg-red-50 p-3 rounded-2xl border border-red-200">
+            <p className="text-[9px] font-black uppercase text-red-600">Baixada</p>
+            <p className="text-xl font-black text-red-900">{histBxCount}</p>
+          </div>
+          <div className="bg-green-50 p-3 rounded-2xl border border-green-200">
+            <p className="text-[9px] font-black uppercase text-green-600">SN (OK)</p>
+            <p className="text-xl font-black text-green-900">{histSnCount}</p>
+          </div>
+          <div className="bg-rose-50 p-3 rounded-2xl border border-rose-200">
+            <p className="text-[9px] font-black uppercase text-rose-600">CN (Avarias)</p>
+            <p className="text-xl font-black text-rose-900">{histCnCount}</p>
           </div>
         </div>
 
@@ -3992,73 +4337,66 @@ export const Reports: React.FC<ReportsProps> = ({
                 <tr>
                   <th className="p-3">Data/Hora</th>
                   <th className="p-3">Viatura</th>
+                  <th className="p-3">Status VTR</th>
                   <th className="p-3">Inspetor</th>
-                  <th className="p-3">Status</th>
+                  <th className="p-3">Conformidade</th>
                   <th className="p-3 text-right">Relatório</th>
                 </tr>
               </thead>
               <tbody className="divide-y bg-white">
-                {filteredLogs
-                  .filter(
-                    (l) =>
-                      !prefixSearch ||
-                      String(l.prefix)
-                        .toLowerCase()
-                        .includes(prefixSearch.toLowerCase()) ||
-                      String(l.plate)
-                        .toLowerCase()
-                        .includes(prefixSearch.toLowerCase()),
-                  )
-                  .map((log, idx) => (
-                    <tr
-                      key={`${log.id}-${idx}`}
-                      className="hover:bg-blue-50/50 transition-colors print:break-inside-avoid"
-                    >
-                      <td className="p-3 font-mono text-gray-500">
-                        {new Date(log.date).toLocaleString("pt-BR")}
-                      </td>
-                      <td className="p-3 font-black text-gray-800 uppercase">
-                        {log.prefix}
-                        <span className="text-[8px] font-normal opacity-50 block">
-                          {log.plate}
-                        </span>
-                      </td>
-                      <td className="p-3 uppercase font-bold text-gray-600 break-words">
-                        {getInspector(log)}
-                      </td>
-                      <td className="p-3">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase ${String(log.itemsStatus).includes("CN") ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"}`}
+                {historyLogs.map((log, idx) => (
+                  <tr
+                    key={`${log.id}-${idx}`}
+                    className="hover:bg-blue-50/50 transition-colors print:break-inside-avoid"
+                  >
+                    <td className="p-3 font-mono text-gray-500 whitespace-nowrap">
+                      {new Date(log.date).toLocaleString("pt-BR")}
+                    </td>
+                    <td className="p-3 font-black text-gray-800 uppercase">
+                      {log.prefix}
+                      <span className="text-[8px] font-normal opacity-50 block font-mono">
+                        {log.plate}
+                      </span>
+                    </td>
+                    <td className="p-3 whitespace-nowrap">
+                      {renderVehicleStatusBadge(getLogVehicleStatus(log))}
+                    </td>
+                    <td className="p-3 uppercase font-bold text-gray-600 break-words">
+                      {getInspector(log)}
+                    </td>
+                    <td className="p-3">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase ${String(log.itemsStatus).includes("CN") ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"}`}
+                      >
+                        {log.itemsStatus || "SN"}
+                      </span>
+                    </td>
+                    <td className="p-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() =>
+                            setViewingJsonData({
+                              data: getFullData(log),
+                              title: "Dados Originais (JSON)",
+                              subtitle: `Protocolo: ${log.id} | Viatura: ${log.prefix}`,
+                            })
+                          }
+                          className="p-2 bg-gray-100 hover:bg-blue-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
+                          title="Visualizar Dados Originais (JSON)"
                         >
-                          {log.itemsStatus}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right">
-                        <div className="flex justify-end gap-2">
-                          <button
-                            onClick={() =>
-                              setViewingJsonData({
-                                data: getFullData(log),
-                                title: "Dados Originais (JSON)",
-                                subtitle: `Protocolo: ${log.id} | Viatura: ${log.prefix}`,
-                              })
-                            }
-                            className="p-2 bg-gray-100 hover:bg-blue-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
-                            title="Visualizar Dados Originais (JSON)"
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => setSelectedLog(log)}
-                            className="p-2 bg-gray-100 hover:bg-green-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
-                            title="Visualizar Relatório Formatado"
-                          >
-                            <FileText className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setSelectedLog(log)}
+                          className="p-2 bg-gray-100 hover:bg-green-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
+                          title="Visualizar Relatório Formatado"
+                        >
+                          <FileText className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

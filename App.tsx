@@ -81,7 +81,8 @@ const App: React.FC = () => {
   const [loginPassword, setLoginPassword] = useState('');
   
   const [view, setView] = useState<'checklist' | 'settings' | 'dashboard'>('checklist');
-  const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login'>('items');
+  const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login' | 'logs_admin'>('items');
+  const [settingsTabTrigger, setSettingsTabTrigger] = useState(0);
   const [showDamageMap, setShowDamageMap] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -1073,6 +1074,8 @@ const App: React.FC = () => {
               onExportModel={handleExportModel}
               onImportModel={handleImportModel}
               initialTab={activeTabInSettings} 
+              tabTrigger={settingsTabTrigger}
+              onTabChange={setActiveTabInSettings}
               setCurrentUser={setCurrentUser}
               googleUser={googleUser}
               onGoogleSignIn={handleGoogleSignIn}
@@ -1439,7 +1442,11 @@ const App: React.FC = () => {
           </button>
 
           <button 
-            onClick={() => { setActiveTabInSettings('items'); setView('settings'); }} 
+            onClick={() => { 
+              setActiveTabInSettings('items'); 
+              setSettingsTabTrigger(prev => prev + 1);
+              setView('settings'); 
+            }} 
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all shrink-0 ${view === 'settings' && activeTabInSettings !== 'manual' && activeTabInSettings !== 'about' ? 'bg-blue-50 text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
             title="Ajustes"
           >
