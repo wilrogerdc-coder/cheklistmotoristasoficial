@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { ChecklistItem, ItemStatus } from '../types';
 import { CheckSquare, Camera } from 'lucide-react';
 
@@ -20,6 +20,8 @@ export const ChecklistTable: React.FC<ChecklistTableProps> = ({
   onSaveToGeneralNotes,
   onAddPhoto
 }) => {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
   return (
     <div className="border rounded-lg bg-white shadow-sm overflow-hidden">
       <div className="divide-y divide-gray-100">
@@ -33,22 +35,28 @@ export const ChecklistTable: React.FC<ChecklistTableProps> = ({
 
           {items.map((item, index) => {
             const lastData = lastItems?.find(li => li.label === item.label);
+            const isExpanded = expandedId === item.id;
+
             return (
             <div 
-              key={item.id} 
-              className={`px-2 py-0.5 grid grid-cols-[38%_12%_auto_1fr] gap-2 items-center group transition-colors ${
+              key={`${item.id}-${index}`} 
+              className={`px-2 py-1 grid grid-cols-[38%_12%_auto_1fr] gap-2 items-center group transition-colors ${
                 index % 2 === 0 ? 'bg-white' : 'bg-gray-50/80'
               } hover:bg-blue-50/30`}
             >
               {/* Coluna 1: Label */}
               <div className="min-w-0">
-                <span className="font-semibold text-gray-700 text-[10px] leading-tight block truncate" title={item.label}>
+                <span 
+                  onClick={() => setExpandedId(isExpanded ? null : item.id)}
+                  className={`font-semibold text-gray-700 text-[10px] leading-tight block cursor-pointer transition-all ${isExpanded ? 'whitespace-normal' : 'truncate'}`} 
+                  title={item.label}
+                >
                   {item.label}
                 </span>
               </div>
 
               {/* Coluna Histórico: Status Anterior */}
-              <div className="flex justify-center no-print">
+              <div className="flex justify-center">
                 {lastData ? (
                   <div 
                     className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase flex items-center gap-1 ${

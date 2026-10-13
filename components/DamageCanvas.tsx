@@ -77,9 +77,9 @@ export const DamageCanvas: React.FC<DamageCanvasProps> = ({
         {img ? (
           <>
             <img src={img} className="w-full h-full object-contain" alt={VIEW_LABELS[index]} referrerPolicy="no-referrer" />
-            {viewDamages.map(d => (
+            {viewDamages.map((d, dIdx) => (
               <div 
-                key={d.id}
+                key={`view-${index}-${d.id || dIdx}-${dIdx}`}
                 className="absolute w-2.5 h-2.5 bg-red-600 rounded-full border-2 border-white shadow-md -translate-x-1/2 -translate-y-1/2 z-10"
                 style={{ left: `${d.x}%`, top: `${d.y}%` }}
               />
@@ -193,9 +193,9 @@ export const DamageCanvas: React.FC<DamageCanvasProps> = ({
                   alt="Zoom"
                   referrerPolicy="no-referrer"
                 />
-                {damages.filter(d => d.imageIndex === expandedIndex).map(damage => (
+                {damages.filter(d => d.imageIndex === expandedIndex).map((damage, dIdx) => (
                   <button
-                    key={damage.id}
+                    key={`zoom-${expandedIndex}-${damage.id || dIdx}-${dIdx}`}
                     className="absolute -translate-x-1/2 -translate-y-1/2 z-20 group outline-none"
                     style={{ left: `${damage.x}%`, top: `${damage.y}%` }}
                     onClick={(e) => { e.stopPropagation(); onRemoveDamage(damage.id); }}

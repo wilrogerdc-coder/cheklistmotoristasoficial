@@ -11,6 +11,7 @@ import {
   INITIAL_VEHICLE_RATIOS,
   FIXED_GOOGLE_SHEET_URL
 } from './constants';
+import { filterLogsLast30Days, filterLogsLast3Months, filterLogsBySelectedDates } from './services/dateFilterService';
 import { 
   LogEntry,
   InspectionData, 
@@ -21,16 +22,21 @@ import {
   User,
   Vehicle,
   Station,
-  Justification
+  Justification,
+  SyncProgressInfo
 } from './types';
 import { 
   initAuth, 
-  googleSignIn, 
-  logout as googleLogout, 
-  getAccessToken 
+  saveGoogleSession,
+  googleLogout, 
+  getAccessToken,
+  GoogleUser
 } from './services/googleAuth';
+import { GoogleLoginButton } from './components/GoogleLoginButton';
 import { sheetsService } from './services/googleSheets';
+import { compressImage } from './services/imageUtils';
 import { FleetDashboard } from './components/FleetDashboard';
+import { SyncProgressBar } from './components/SyncProgressBar';
 import { 
   Printer, 
   Settings as SettingsIcon,
@@ -53,51 +59,92 @@ import {
   RefreshCw,
   BookOpen,
   Info,
-  LayoutDashboard
+  LayoutDashboard,
+  Mail
 } from 'lucide-react';
 
-const App: React.FC = () => {
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('checkviatura_current_user');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse saved user", e);
-      }
-    }
-    return null;
-  });
+const getYouTubeEmbedUrl = (url?: string): string | null => {
+  if (!url) return null;
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+  const match = url.match(regExp);
+  if (match && match[2].length === 11) {
+    const videoId = match[2];
+    return `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&disablekb=1&modestbranding=1&playsinline=1`;
+  }
+  return null;
+};
 
-  useEffect(() => {
-    if (currentUser) {
-      localStorage.setItem('checkviatura_current_user', JSON.stringify(currentUser));
-    } else {
-      localStorage.removeItem('checkviatura_current_user');
-    }
-  }, [currentUser]);
+const App: React.FC = () => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   
+  const [showSplash, setShowSplash] = useState(true);
   const [view, setView] = useState<'checklist' | 'settings' | 'dashboard'>('checklist');
-  const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login' | 'logs_admin'>('items');
-  const [settingsTabTrigger, setSettingsTabTrigger] = useState(0);
+  const [activeTabInSettings, setActiveTabInSettings] = useState<'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login'>('items');
   const [showDamageMap, setShowDamageMap] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'checking' | 'online' | 'offline'>('idle');
   const [selectedStationFilter, setSelectedStationFilter] = useState<string>('');
-  const [googleUser, setGoogleUser] = useState<any>(null);
+  const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(null);
   const [printTimestamp, setPrintTimestamp] = useState<string>('');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [justifications, setJustifications] = useState<Justification[]>([]);
+  const allLogsCacheRef = useRef<LogEntry[] | null>((() => {
+    try {
+      const cached = localStorage.getItem('checkviatura_cached_logs');
+      if (!cached) return null;
+      const parsed = JSON.parse(cached);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  })());
+  const [logs, setLogs] = useState<LogEntry[]>(() => {
+    try {
+      const cached = localStorage.getItem('checkviatura_cached_logs');
+      if (!cached) return [];
+      const parsed = JSON.parse(cached);
+      return Array.isArray(parsed) ? filterLogsLast3Months(parsed) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [justifications, setJustifications] = useState<Justification[]>(() => {
+    try {
+      const cached = localStorage.getItem('checkviatura_cached_justifications');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [lastSyncTime, setLastSyncTime] = useState<string>(() => {
+    return localStorage.getItem('checkviatura_last_sync') || '';
+  });
+  const [lastSyncDuration, setLastSyncDuration] = useState<string>(() => {
+    return localStorage.getItem('checkviatura_last_sync_duration') || '';
+  });
+  const [syncProgress, setSyncProgress] = useState<SyncProgressInfo>({
+    isActive: false,
+    progress: 0,
+    title: 'Sincronização de Dados & Sistema',
+    currentStep: 'Aguardando sincronização...',
+    status: 'idle'
+  });
   const [isFetchingDashboardData, setIsFetchingDashboardData] = useState(false);
   const [reportConfig, setReportConfig] = useState<{ prefix: string; reportType?: any } | undefined>(undefined);
   const [lastChecklistData, setLastChecklistData] = useState<{ label: string; status: string; observation?: string }[] | undefined>(undefined);
+  const [recentConferenceSuccess, setRecentConferenceSuccess] = useState<{ prefix: string; message: string } | null>(null);
   const checklistRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (currentUser && showLoginModal) {
+      setShowLoginModal(false);
+    }
+  }, [currentUser, showLoginModal]);
 
   const handleViewReport = (prefix: string) => {
     const vehicle = settings.vehicles?.find(v => v.prefix === prefix);
@@ -124,21 +171,170 @@ const App: React.FC = () => {
     setView('settings');
   };
 
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = async (options?: { forceAll?: boolean; targetMonth?: string; scope?: 'CURRENT_MONTH' | 'LAST_MONTH' | 'ALL' }) => {
     const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
-    const targetUrl = rawUrl?.trim();
+    const targetUrl = (rawUrl && rawUrl.startsWith('http')) ? rawUrl.trim() : FIXED_GOOGLE_SHEET_URL;
     if (!targetUrl) return;
 
+    // Garantir que allLogsCacheRef tenha dados locais caso ainda não tenha inicializado
+    if (!allLogsCacheRef.current || allLogsCacheRef.current.length === 0) {
+      try {
+        const cached = localStorage.getItem('checkviatura_cached_logs');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            allLogsCacheRef.current = parsed;
+          }
+        }
+      } catch (e) {
+        // ignora erro ao ler cache
+      }
+    }
+
+    // Se já temos os logs em cache e foi solicitado um filtro específico ou tudo
+    if (allLogsCacheRef.current && allLogsCacheRef.current.length > 0 && options) {
+      if (options.forceAll || options.scope === 'ALL') {
+        setLogs(allLogsCacheRef.current);
+        return;
+      }
+      if (options.targetMonth) {
+        setLogs(filterLogsBySelectedDates(allLogsCacheRef.current, { month: options.targetMonth }));
+        return;
+      }
+      if (options.scope === 'CURRENT_MONTH' || options.scope === 'LAST_MONTH') {
+        setLogs(filterLogsLast3Months(allLogsCacheRef.current));
+        return;
+      }
+    }
+
+    const startDataTime = performance.now();
     setIsFetchingDashboardData(true);
+    setSyncProgress(prev => ({
+      ...prev,
+      isActive: true,
+      progress: prev.status === 'syncing' ? Math.max(prev.progress, 40) : 25,
+      title: options?.scope === 'ALL' ? 'Sincronizando Histórico Completo' : 'Sincronizando Dados da Frota',
+      currentStep: 'Buscando conferências e justificativas no banco de dados...',
+      status: 'syncing'
+    }));
+
     try {
+      // Função segura de requisição que não lança erro não tratado em caso de offline/CORS/rede
+      const safeFetchJson = async (url: string) => {
+        try {
+          const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          const timeoutId = controller ? setTimeout(() => controller.abort(), 12000) : null;
+          const res = await fetch(url, {
+            method: 'GET',
+            mode: 'cors',
+            signal: controller?.signal
+          });
+          if (timeoutId) clearTimeout(timeoutId);
+          if (res && res.ok) {
+            return await res.json();
+          }
+          return null;
+        } catch (fetchErr) {
+          console.warn("Aviso de rede ao contatar planilha Google (mantendo dados locais):", fetchErr);
+          return null;
+        }
+      };
+
       const [logsRes, justRes] = await Promise.all([
-        fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getLogs`).then(r => r.ok ? r.json() : []),
-        fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getJustifications`).then(r => r.ok ? r.json() : [])
+        safeFetchJson(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getLogs&_t=${Date.now()}`),
+        safeFetchJson(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getJustifications&_t=${Date.now()}`)
       ]);
-      if (Array.isArray(logsRes)) setLogs(logsRes);
-      if (Array.isArray(justRes)) setJustifications(justRes);
+
+      if (Array.isArray(logsRes) && logsRes.length > 0) {
+        const validLogs: LogEntry[] = logsRes.filter((l: any) => l && (l.id || l.ID));
+        allLogsCacheRef.current = validLogs;
+
+        let logsToSet: LogEntry[];
+        if (options?.forceAll || options?.scope === 'ALL') {
+          logsToSet = validLogs;
+        } else if (options?.targetMonth) {
+          logsToSet = filterLogsBySelectedDates(validLogs, { month: options.targetMonth });
+        } else {
+          // Padrão especialista de Alta Performance: Carrega os últimos 3 meses
+          // Garante precisão total para Mês Atual, Mês Anterior e KM contínuo
+          logsToSet = filterLogsLast3Months(validLogs);
+        }
+
+        setLogs(logsToSet);
+
+        try {
+          // Manter cache local dos últimos 3 meses para carregamento inicial instantâneo
+          const recentForStorage = filterLogsLast3Months(validLogs);
+          localStorage.setItem('checkviatura_cached_logs', JSON.stringify(recentForStorage.slice(0, 600)));
+        } catch (e) {
+          console.warn("Limite de quota do storage atingido ao salvar logs", e);
+        }
+
+        const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        setLastSyncTime(syncTime);
+        localStorage.setItem('checkviatura_last_sync', syncTime);
+
+        const dataDuration = (performance.now() - startDataTime) / 1000;
+        const durationFormatted = `${dataDuration.toFixed(2)}s`;
+        setLastSyncDuration(durationFormatted);
+        localStorage.setItem('checkviatura_last_sync_duration', durationFormatted);
+
+        setSyncProgress(prev => {
+          const sysTime = prev.systemTime;
+          const totTime = sysTime !== undefined ? sysTime + dataDuration : dataDuration;
+          return {
+            ...prev,
+            isActive: true,
+            progress: 100,
+            title: 'Dados Sincronizados com Sucesso',
+            currentStep: 'Carregamento de dados finalizado com êxito!',
+            dataTime: dataDuration,
+            totalTime: totTime,
+            status: 'completed',
+            timestamp: syncTime,
+            details: {
+              ...prev.details,
+              logsCount: validLogs.length
+            }
+          };
+        });
+      } else {
+        // Se a requisição de rede falhar ou não retornar dados, aplicar filtro sobre o cache local já disponível
+        if (allLogsCacheRef.current && allLogsCacheRef.current.length > 0) {
+          let fallbackLogs: LogEntry[];
+          if (options?.forceAll || options?.scope === 'ALL') {
+            fallbackLogs = allLogsCacheRef.current;
+          } else if (options?.targetMonth) {
+            fallbackLogs = filterLogsBySelectedDates(allLogsCacheRef.current, { month: options.targetMonth });
+          } else {
+            fallbackLogs = filterLogsLast3Months(allLogsCacheRef.current);
+          }
+          setLogs(fallbackLogs);
+        }
+      }
+
+      if (Array.isArray(justRes)) {
+        setJustifications(justRes);
+        try {
+          localStorage.setItem('checkviatura_cached_justifications', JSON.stringify(justRes));
+        } catch (e) {
+          console.warn("Limite de quota do storage atingido ao salvar justificativas", e);
+        }
+      }
     } catch (err) {
-      console.error("Erro ao buscar dados do dashboard:", err);
+      console.warn("Aviso ao buscar dados do dashboard (fallback para cache local ativado):", err);
+      const dataDuration = (performance.now() - startDataTime) / 1000;
+      setSyncProgress(prev => ({
+        ...prev,
+        isActive: true,
+        progress: 100,
+        title: 'Dados Carregados (Cache Local)',
+        currentStep: 'Dados locais mantidos para operação contínua.',
+        dataTime: dataDuration,
+        totalTime: prev.systemTime ? prev.systemTime + dataDuration : dataDuration,
+        status: 'completed',
+        timestamp: new Date().toLocaleTimeString('pt-BR')
+      }));
     } finally {
       setIsFetchingDashboardData(false);
     }
@@ -152,7 +348,7 @@ const App: React.FC = () => {
   
   useEffect(() => {
     // Garantir que o usuário não permaneça em uma tela que não tem permissão
-    if (view === 'dashboard' && !hasPermission('reports')) {
+    if (view === 'dashboard' && !hasPermission('dashboard')) {
       setView('checklist');
     }
     if (view === 'settings' && !hasPermission('settings') && !['manual', 'about'].includes(activeTabInSettings)) {
@@ -278,63 +474,188 @@ const App: React.FC = () => {
     };
   });
 
-  useEffect(() => {
-    // Busca inicial de configurações, usuários, viaturas e postos no banco de dados na nuvem para manter tudo atualizado
-    const syncOnStartup = async () => {
-      const targetUrl = settings.googleSheetUrl?.trim();
-      if (!targetUrl) return;
+  const performFullSync = async () => {
+    const rawUrl = settings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
+    const targetUrl = (rawUrl && rawUrl.startsWith('http')) ? rawUrl.trim() : FIXED_GOOGLE_SHEET_URL;
+    if (!targetUrl) return;
 
-      setIsSyncing(true);
-      try {
-        console.log("Iniciando sincronização completa com banco de dados na inicialização...");
-        
-        // Disparar requisições em paralelo
-        const [settingsRes, usersRes, vehiclesRes, stationsRes] = await Promise.all([
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getSettings`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getVehicles`).then(r => r.ok ? r.json() : null).catch(() => null),
-          fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations`).then(r => r.ok ? r.json() : null).catch(() => null)
-        ]);
+    const fullStartTime = performance.now();
+    setIsSyncing(true);
+    setSyncProgress({
+      isActive: true,
+      progress: 10,
+      title: 'Sincronização Completa do Sistema & Dados',
+      currentStep: 'Iniciando conexão com banco de dados e preparando tabelas...',
+      status: 'syncing'
+    });
 
-        setSettings(prev => {
-          let updated = { ...prev };
+    let systemDuration = 0;
+    let dataDuration = 0;
+    let vehiclesCount = settings.vehicles?.length || 0;
+    let stationsCount = settings.stations?.length || 0;
+    let usersCount = settings.users?.length || 0;
+    let logsCount = logs.length;
 
-          // 1. Sincronizar Configurações do Sistema (Ignorando dados específicos de conexão local como URL e SpreadsheetID)
-          if (settingsRes && typeof settingsRes === 'object' && !Array.isArray(settingsRes)) {
-            for (const key in settingsRes) {
-              if (settingsRes.hasOwnProperty(key) && key !== 'googleSheetUrl' && key !== 'googleSpreadsheetId') {
-                (updated as any)[key] = settingsRes[key];
-              }
+    try {
+      // ETAPA 1: Carregamento Completo do Sistema (Configurações, Usuários, Viaturas, Postos)
+      const systemStartTime = performance.now();
+      setSyncProgress(prev => ({
+        ...prev,
+        progress: 25,
+        currentStep: 'Carregando configurações do sistema e banco de usuários...'
+      }));
+
+      const safeFetchJson = async (url: string) => {
+        try {
+          const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          const timeoutId = controller ? setTimeout(() => controller.abort(), 12000) : null;
+          const res = await fetch(url, {
+            method: 'GET',
+            mode: 'cors',
+            signal: controller?.signal
+          });
+          if (timeoutId) clearTimeout(timeoutId);
+          if (res && res.ok) {
+            return await res.json();
+          }
+          return null;
+        } catch (fetchErr) {
+          console.warn("Aviso de rede ao contatar planilha Google (mantendo dados locais):", fetchErr);
+          return null;
+        }
+      };
+
+      const [settingsRes, usersRes, vehiclesRes, stationsRes] = await Promise.all([
+        safeFetchJson(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getSettings&_t=${Date.now()}`),
+        safeFetchJson(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers&_t=${Date.now()}`),
+        safeFetchJson(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getVehicles&_t=${Date.now()}`),
+        safeFetchJson(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getStations&_t=${Date.now()}`)
+      ]);
+
+      systemDuration = (performance.now() - systemStartTime) / 1000;
+
+      setSettings(prev => {
+        let updated = { ...prev };
+
+        // 1. Sincronizar Configurações do Sistema
+        if (settingsRes && typeof settingsRes === 'object' && !Array.isArray(settingsRes)) {
+          for (const key in settingsRes) {
+            if (settingsRes.hasOwnProperty(key) && key !== 'googleSheetUrl' && key !== 'googleSpreadsheetId') {
+              (updated as any)[key] = settingsRes[key];
             }
           }
+        }
 
-          // 2. Sincronizar Usuários
-          if (Array.isArray(usersRes) && usersRes.length > 0) {
-            updated.users = usersRes;
-          }
+        // 2. Sincronizar Usuários
+        if (Array.isArray(usersRes) && usersRes.length > 0) {
+          updated.users = usersRes;
+          usersCount = usersRes.length;
+        }
 
-          // 3. Sincronizar Viaturas
-          if (Array.isArray(vehiclesRes) && vehiclesRes.length > 0) {
-            updated.vehicles = vehiclesRes;
-          }
+        // 3. Sincronizar Viaturas
+        if (Array.isArray(vehiclesRes) && vehiclesRes.length > 0) {
+          updated.vehicles = vehiclesRes;
+          vehiclesCount = vehiclesRes.length;
+        }
 
-          // 4. Sincronizar Postos
-          if (Array.isArray(stationsRes) && stationsRes.length > 0) {
-            updated.stations = stationsRes;
-          }
+        // 4. Sincronizar Postos
+        if (Array.isArray(stationsRes) && stationsRes.length > 0) {
+          updated.stations = stationsRes;
+          stationsCount = stationsRes.length;
+        }
 
-          localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
-          console.log("Todas as configurações e tabelas sincronizadas do banco de dados com sucesso na inicialização!");
-          return updated;
-        });
-      } catch (err) {
-        console.error("Erro no carregamento/sincronização inicial das configurações:", err);
-      } finally {
-        setIsSyncing(false);
+        localStorage.setItem('checkviatura_settings', JSON.stringify(updated));
+        console.log("Todas as configurações e tabelas sincronizadas do banco de dados com sucesso na inicialização!");
+        return updated;
+      });
+
+      // ETAPA 2: Carregamento Completo de Dados (Logs de conferência e Justificativas)
+      const dataStartTime = performance.now();
+      setSyncProgress(prev => ({
+        ...prev,
+        progress: 60,
+        systemTime: systemDuration,
+        currentStep: 'Sistema carregado. Buscando conferências e justificativas operacionais...'
+      }));
+
+      const [logsRes, justRes] = await Promise.all([
+        safeFetchJson(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getLogs&_t=${Date.now()}`),
+        safeFetchJson(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getJustifications&_t=${Date.now()}`)
+      ]);
+
+      dataDuration = (performance.now() - dataStartTime) / 1000;
+
+      if (Array.isArray(logsRes) && logsRes.length > 0) {
+        const validLogs: LogEntry[] = logsRes.filter((l: any) => l && (l.id || l.ID));
+        allLogsCacheRef.current = validLogs;
+        const recentForStorage = filterLogsLast3Months(validLogs);
+        setLogs(recentForStorage);
+        logsCount = validLogs.length;
+
+        try {
+          localStorage.setItem('checkviatura_cached_logs', JSON.stringify(recentForStorage.slice(0, 600)));
+        } catch (e) {
+          console.warn("Storage quota excedida ao salvar logs", e);
+        }
       }
-    };
 
-    syncOnStartup();
+      if (Array.isArray(justRes)) {
+        setJustifications(justRes);
+        try {
+          localStorage.setItem('checkviatura_cached_justifications', JSON.stringify(justRes));
+        } catch (e) {
+          console.warn("Storage quota excedida ao salvar justificativas", e);
+        }
+      }
+
+      const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      setLastSyncTime(syncTime);
+      localStorage.setItem('checkviatura_last_sync', syncTime);
+
+      const totalDuration = (performance.now() - fullStartTime) / 1000;
+      const durationFormatted = `${totalDuration.toFixed(2)}s`;
+      setLastSyncDuration(durationFormatted);
+      localStorage.setItem('checkviatura_last_sync_duration', durationFormatted);
+
+      setSyncProgress({
+        isActive: true,
+        progress: 100,
+        title: 'Sincronização Concluída com Sucesso',
+        currentStep: 'Carregamento completo do sistema e dados finalizado com êxito!',
+        systemTime: systemDuration,
+        dataTime: dataDuration,
+        totalTime: totalDuration,
+        status: 'completed',
+        timestamp: syncTime,
+        details: {
+          vehiclesCount,
+          stationsCount,
+          usersCount,
+          logsCount
+        }
+      });
+    } catch (err) {
+      console.warn("Aviso na sincronização completa:", err);
+      const totalDuration = (performance.now() - fullStartTime) / 1000;
+      setSyncProgress({
+        isActive: true,
+        progress: 100,
+        title: 'Sincronização Concluída',
+        currentStep: 'Dados locais preservados com sucesso.',
+        systemTime: systemDuration,
+        dataTime: dataDuration,
+        totalTime: totalDuration,
+        status: 'completed',
+        timestamp: new Date().toLocaleTimeString('pt-BR')
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    // Sincronização inicial automática ao abrir a aplicação
+    performFullSync();
   }, []);
 
   useEffect(() => {
@@ -406,42 +727,6 @@ const App: React.FC = () => {
   const themeColor = settings.headerBgColor || '#b91c1c';
   const printScale = settings.printScale || 1.0;
 
-  const compressImage = (base64Str: string): Promise<string> => {
-    return new Promise((resolve) => {
-      if (!base64Str || !base64Str.startsWith('data:image')) {
-        resolve(base64Str);
-        return;
-      }
-      const img = new Image();
-      img.src = base64Str;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 600;
-        const MAX_HEIGHT = 600;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.4));
-      };
-      img.onerror = () => resolve(base64Str);
-    });
-  };
 
   useEffect(() => {
     const filteredDefaults = settings.defaultItems.filter(i => {
@@ -526,19 +811,6 @@ const App: React.FC = () => {
       }
     );
   }, []);
-
-  const handleGoogleSignIn = async () => {
-    try {
-      const result = await googleSignIn();
-      if (result) {
-        setGoogleUser(result.user);
-        setGoogleToken(result.accessToken);
-      }
-    } catch (err) {
-      console.error("Google login failed:", err);
-      alert("Falha ao conectar com o Google");
-    }
-  };
 
   const handleGoogleSync = async () => {
     if (!googleToken) {
@@ -638,69 +910,156 @@ const App: React.FC = () => {
       handleGoogleSync();
     }
     
+    // Atualizar logs para garantir que a conferencia anterior esteja disponível
+    fetchDashboardData();
+    
     setIsSaving(false);
     setView('checklist');
   };
 
-  const handleGoogleLogin = async () => {
+  const handleGoogleLoginSuccess = async (profile: any, accessToken: string) => {
+    setIsLoggingIn(true);
     try {
-      const result = await googleSignIn();
-      if (result && result.user) {
-        const email = result.user.email?.toLowerCase();
-        // Buscar usuário vinculado por este e-mail
-        const matchedUser = (settings.users || []).find(u => u.email?.toLowerCase() === email);
+      const email = profile.email?.toLowerCase().trim();
+      
+      if (!email) {
+        alert("Erro: E-mail não informado pela conta Google.");
+        setIsLoggingIn(false);
+        return;
+      }
+
+      // 1. Buscar usuário vinculado por este e-mail localmente
+      let matchedUser = (settings.users || []).find(u => {
+        const uEmail = u.email?.toString().toLowerCase().trim();
+        return uEmail === email;
+      });
+      
+      // 2. Se não encontrou localmente, busca lista atualizada do Sheets via GAS
+      if (!matchedUser) {
+        const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
+        const usersRes = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`)
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null);
         
-        if (matchedUser) {
-          setCurrentUser(matchedUser);
-          setShowLoginModal(false);
-          saveAuditLog('LOGIN_GOOGLE', `Usuário realizou login via Google (${email})`);
-        } else {
-          alert(`ERRO: O e-mail ${email} não está vinculado a nenhum usuário cadastrado.`);
-          googleLogout();
+        if (Array.isArray(usersRes)) {
+          const updatedSettings = { ...settings, users: usersRes };
+          setSettings(updatedSettings);
+          localStorage.setItem('checkviatura_settings', JSON.stringify(updatedSettings));
+          
+          matchedUser = usersRes.find(u => {
+            const uEmail = u.email?.toString().toLowerCase().trim();
+            return uEmail === email;
+          });
         }
       }
+
+      if (matchedUser) {
+        const userObj: GoogleUser = {
+          email: email,
+          name: profile.name || email.split('@')[0],
+          picture: profile.picture || `https://ui-avatars.com/api/?name=${email}&background=random`,
+          displayName: profile.name || email.split('@')[0],
+          photoURL: profile.picture || `https://ui-avatars.com/api/?name=${email}&background=random`
+        };
+
+        setGoogleUser(userObj);
+        setGoogleToken(accessToken);
+        saveGoogleSession(userObj, accessToken);
+        
+        setCurrentUser(matchedUser);
+        setShowLoginModal(false);
+        
+        saveAuditLog('LOGIN_GOOGLE', `Usuário validado via Google (${email})`);
+      } else {
+        alert(`ERRO: O e-mail ${email} não está vinculado a nenhum usuário cadastrado na aba USUARIOS.`);
+        googleLogout();
+      }
     } catch (err) {
-      console.error("Erro no login Google:", err);
-      alert("Falha ao realizar login com Google.");
+      console.error("Erro no processamento do login Google:", err);
+      alert("Falha ao processar login Google.");
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = (settings.users || []).find(u => 
-      u.username.toLowerCase() === loginUsername.toLowerCase() && u.password === loginPassword
-    );
+    setIsLoggingIn(true);
+    
+    try {
+      // 1. Tentar validar com usuários já carregados localmente
+      let users = settings.users || [];
+      let user = users.find(u => 
+        u.username?.toString().toLowerCase().trim() === loginUsername.toLowerCase().trim() && 
+        u.password?.toString().trim() === loginPassword.trim()
+      );
 
-    // Super user legacy check
-    if (!user && loginUsername.toLowerCase() === 'cavalieri' && loginPassword === 'tricolor') {
-      const superUser: User = {
-        id: 'master',
-        username: 'cavalieri',
-        name: 'Administrador Mestre',
-        password: 'tricolor',
-        permissions: { checklist: true, reports: true, settings: true, admin: true }
-      };
-      setCurrentUser(superUser);
-      setShowLoginModal(false);
-      setLoginUsername('');
-      setLoginPassword('');
-      return;
-    }
+      // 2. Se não encontrou localmente, busca a lista atualizada do Google Sheets (aba USUARIOS)
+      if (!user) {
+        const targetUrl = settings.googleSheetUrl?.trim() || FIXED_GOOGLE_SHEET_URL;
+        const usersRes = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getUsers`)
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null);
+        
+        if (Array.isArray(usersRes)) {
+          // Atualiza o estado local de usuários para futuras validações
+          const updatedSettings = { ...settings, users: usersRes };
+          setSettings(updatedSettings);
+          localStorage.setItem('checkviatura_settings', JSON.stringify(updatedSettings));
+          
+          // Tenta validar novamente com a lista recém-baixada
+          user = usersRes.find(u => 
+            u.username?.toString().toLowerCase().trim() === loginUsername.toLowerCase().trim() && 
+            u.password?.toString().trim() === loginPassword.trim()
+          );
+        }
+      }
 
-    if (user) {
-      setCurrentUser(user);
-      setShowLoginModal(false);
-      setLoginUsername('');
-      setLoginPassword('');
-      saveAuditLog('LOGIN', 'Usuário realizou login com sucesso');
-    } else {
-      alert('Usuário ou senha inválidos');
+      // 3. Verificação de Super User Legado
+      if (!user && loginUsername.toLowerCase() === 'cavalieri' && loginPassword === 'tricolor') {
+        const superUser: User = {
+          id: 'master',
+          username: 'cavalieri',
+          name: 'Administrador Mestre',
+          password: 'tricolor',
+          permissions: { checklist: true, reports: true, settings: true, admin: true }
+        };
+        setCurrentUser(superUser);
+        setShowLoginModal(false);
+        setLoginUsername('');
+        setLoginPassword('');
+        setIsLoggingIn(false);
+        return;
+      }
+
+      if (user) {
+        // Limpar estados de interface IMEDIATAMENTE
+        setCurrentUser(user);
+        setShowLoginModal(false);
+        setLoginUsername('');
+        setLoginPassword('');
+        setIsLoggingIn(false);
+        
+        // Registro de log em background
+        saveAuditLog('LOGIN', `Usuário ${user.username} realizou login com sucesso via base de dados`);
+        return;
+      } else {
+        alert('Usuário ou senha inválidos. Verifique se o cadastro está correto na aba USUARIOS da planilha.');
+      }
+    } catch (err) {
+      console.error("Erro no processo de login:", err);
+      alert("Erro ao conectar com o servidor de usuários. Verifique sua conexão.");
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
   const handleLogout = () => {
     saveAuditLog('LOGOUT', 'Usuário realizou logout');
+    googleLogout();
     setCurrentUser(null);
+    setGoogleUser(null);
+    setGoogleToken(null);
     setLoginUsername('');
     setLoginPassword('');
     setShowLoginModal(false);
@@ -710,22 +1069,81 @@ const App: React.FC = () => {
   // Removido o bloqueio de login obrigatório
   
   const hasPermission = (screen: keyof User['permissions']) => {
-    // Menu Dashboard (reports) e Ajustes (settings) liberados para permitir acesso ao sistema
-    if (screen === 'reports') return true;
-    if (screen === 'settings') return true;
-
-    // Se não há usuário logado (Visitante), restringimos admin
+    // Se não há usuário logado (Visitante), restringimos menus críticos
     if (!currentUser) {
-      if (screen === 'admin') return false;
-      return true; // Checklist e outros podem ser permitidos para Visitantes se não houver bloqueio explícito
+      if (screen === 'checklist' || screen === 'dashboard') return true; // Permitido para preencher checklist e visualizar dashboard
+      return false; // Todos os outros bloqueados para não logados
     }
     
-    // Se há usuário logado, respeitamos estritamente suas permissões cadastradas
-    if (screen === 'admin') {
-      return !!(currentUser.permissions.viewAudit || currentUser.permissions.admin || currentUser.permissions.manageUsers);
+    // Telas Restritas Somente ao Super Usuário Cavalieri
+    if (['viewAudit', 'manageLogs', 'manageDatabase', 'manageReportEditor'].includes(screen as string)) {
+      return currentUser.username.toLowerCase() === 'cavalieri';
+    }
+
+    // Usuário Mestre Cavalieri sempre tem acesso total
+    if (currentUser.username.toLowerCase() === 'cavalieri') return true;
+
+    // Admin Geral continua como mestre do sistema para as demais telas
+    if (currentUser.permissions.admin) return true;
+
+    if (screen === 'settings') {
+      const p = currentUser.permissions;
+      const hasAnyReportPerm = !!(
+        p.reports || 
+        p.reportNovelties || 
+        p.reportSynthetic || 
+        p.reportAnalytical || 
+        p.reportFull || 
+        p.reportMonthlyGrouped || 
+        p.reportHistory || 
+        p.reportDailyControl || 
+        p.reportDailyControlMotos || 
+        p.reportWeeklyLeves || 
+        p.reportWeeklyMotos || 
+        p.reportWeeklyAb || 
+        p.reportRetroactiveLogs || 
+        p.reportFinalMonthlyBook || 
+        p.reportFleetDashboard || 
+        p.reportKmMonthly
+      );
+
+      return !!(p.manageStations || 
+               p.manageVehicles || 
+               p.manageUsers || 
+               p.manageItems || 
+               p.manageImages || 
+               p.manageStyle || 
+               hasAnyReportPerm ||
+               p.settings);
+    }
+
+    if (screen === 'reports') {
+      const p = currentUser.permissions;
+      return !!(
+        p.reports || 
+        p.reportNovelties || 
+        p.reportSynthetic || 
+        p.reportAnalytical || 
+        p.reportFull || 
+        p.reportMonthlyGrouped || 
+        p.reportHistory || 
+        p.reportDailyControl || 
+        p.reportDailyControlMotos || 
+        p.reportWeeklyLeves || 
+        p.reportWeeklyMotos || 
+        p.reportWeeklyAb || 
+        p.reportRetroactiveLogs || 
+        p.reportFinalMonthlyBook || 
+        p.reportFleetDashboard || 
+        p.reportKmMonthly
+      );
+    }
+
+    if (screen === 'dashboard') {
+      return true; // Dashboard de prontidão é tela de consulta operacional acessível a todos
     }
     
-    return currentUser.permissions[screen] !== false;
+    return !!currentUser.permissions[screen as keyof User['permissions']];
   };
 
   const handleExportModel = () => {
@@ -811,6 +1229,49 @@ const App: React.FC = () => {
       screenshot: "" 
     };
 
+    // Atualização instantânea e otimista do estado local de logs para exibição sem delay no Dashboard
+    const instantLogEntry: LogEntry = {
+      id: logData.id,
+      date: logData.date,
+      prefix: logData.prefix,
+      plate: logData.plate,
+      checklistType: logData.checklistType,
+      km: logData.km,
+      inspector: logData.inspector,
+      itemsStatus: logData.itemsStatus,
+      vehicleStatus: logData.vehicleStatus,
+      itemsDetail: logData.itemsDetail,
+      fullData: logData.fullData,
+      generalObservation: logData.generalObservation,
+      screenshot: ""
+    };
+
+    setLogs(prev => {
+      const filtered = prev.filter(l => l.id !== instantLogEntry.id);
+      const updated = [instantLogEntry, ...filtered];
+      try {
+        localStorage.setItem('checkviatura_cached_logs', JSON.stringify(updated.slice(0, 1000)));
+      } catch (e) {
+        console.warn("Storage quota:", e);
+      }
+      return updated;
+    });
+
+    // Atualizar KM da viatura localmente de imediato
+    if (data.prefix && data.km) {
+      const updatedVehicles = (settings.vehicles || []).map(v => {
+        if (v.prefix === data.prefix) {
+          return { ...v, currentKm: Number(data.km) };
+        }
+        return v;
+      });
+      const updatedSettings = { ...settings, vehicles: updatedVehicles };
+      setSettings(updatedSettings);
+      try {
+        localStorage.setItem('checkviatura_settings', JSON.stringify(updatedSettings));
+      } catch (e) {}
+    }
+
     if (logData.fullData.length > 45000) {
       console.warn("Payload grande detectado. Otimizando dados...");
       const optimizedMirror = { ...dataForMirror, vehicleImages: [] };
@@ -890,6 +1351,31 @@ const App: React.FC = () => {
     });
   };
 
+  const resetChecklistForm = () => {
+    const initialFreq = 'Diário';
+    const filteredDefaults = (settings.defaultItems || []).filter(i => 
+      i.frequency === initialFreq || i.frequency === 'Ambos'
+    );
+    
+    setData({
+      id: crypto.randomUUID(),
+      date: new Date().toISOString().split('T')[0],
+      prefix: '',
+      plate: '',
+      checklistType: initialFreq,
+      km: '',
+      vehicleStatus: 'OPERANDO',
+      items: filteredDefaults.map(i => ({ ...i, status: 'PENDING' as ItemStatus, photos: [] })),
+      damages: [],
+      photos: [],
+      vehicleImages: [...(settings.vehicleImages || [])],
+      vehicleImageRatios: [...(settings.vehicleImageRatios || INITIAL_VEHICLE_RATIOS)],
+      generalObservation: '',
+      signatureName: currentUser ? (currentUser.name || currentUser.username || '') : (googleUser ? (googleUser.name || '') : ''),
+      signatureRank: currentUser?.rank || ''
+    });
+  };
+
   const handleVisualizarPdf = async () => {
     if (data.items.some(item => item.status === 'PENDING')) {
       alert("BLOQUEIO: Existem itens pendentes.");
@@ -962,9 +1448,12 @@ const App: React.FC = () => {
     setShowExportMenu(false);
     setIsSaving(true);
     
+    const finishedPrefix = String(data.prefix || '').trim();
+    const finishedCycle = data.checklistType || 'Diário';
+
     try {
       await saveLogToGoogleSheets();
-      await saveAuditLog('CHECKLIST_FINALIZADO', `Checklist ${data.checklistType} finalizado para viatura ${data.prefix}`);
+      await saveAuditLog('CHECKLIST_FINALIZADO', `Checklist ${finishedCycle} finalizado para viatura ${finishedPrefix}`);
       
       // Se tiver token do Google Real, salva também na planilha real
       if (googleToken && settings.googleSpreadsheetId) {
@@ -977,8 +1466,20 @@ const App: React.FC = () => {
         await sheetsService.appendLog(googleToken, settings.googleSpreadsheetId, logToAppend);
       }
       
-      // Atualizar dados do dashboard em background
-      fetchDashboardData();
+      // Atualizar dados do dashboard em tempo real
+      await fetchDashboardData();
+
+      // Definir feedback de sucesso para exibição no Dashboard
+      setRecentConferenceSuccess({
+        prefix: finishedPrefix,
+        message: `Checklist ${finishedCycle} da viatura ${finishedPrefix} finalizado com sucesso! Todos os indicadores foram atualizados.`
+      });
+
+      // Resetar formulário do checklist para a próxima conferência
+      resetChecklistForm();
+
+      // Exibir imediatamente a tela de dashboard
+      setView('dashboard');
       
     } catch (err) {
       console.error("Erro no processo de finalização:", err);
@@ -986,11 +1487,6 @@ const App: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
-    
-    // Pequeno atraso para garantir que o loader sumiu antes de abrir o print
-    setTimeout(() => {
-      window.print();
-    }, 300);
   };
 
   const handleOnlySave = async () => {
@@ -1021,28 +1517,144 @@ const App: React.FC = () => {
       return;
     }
 
-    // setShowExportMenu(false); // Mantém aberto para permitir gerar PDF após gravar
     setIsSaving(true);
-    await saveLogToGoogleSheets();
-    await saveAuditLog('CHECKLIST_SALVO', `Checklist ${data.checklistType} salvo manualmente para viatura ${data.prefix}`);
-    
-    // Atualizar dashboard
-    await fetchDashboardData();
-    
-    setIsSaving(false);
-    alert("Checklist salvo com sucesso! Agora você pode gerar o PDF se desejar.");
+    const finishedPrefix = String(data.prefix || '').trim();
+    const finishedCycle = data.checklistType || 'Diário';
+
+    try {
+      await saveLogToGoogleSheets();
+      await saveAuditLog('CHECKLIST_SALVO', `Checklist ${finishedCycle} salvo manualmente para viatura ${finishedPrefix}`);
+      
+      // Atualizar dashboard
+      await fetchDashboardData();
+
+      setRecentConferenceSuccess({
+        prefix: finishedPrefix,
+        message: `Checklist ${finishedCycle} da viatura ${finishedPrefix} salvo com sucesso! Indicadores atualizados.`
+      });
+
+      resetChecklistForm();
+      setView('dashboard');
+    } catch (err) {
+      console.error("Erro ao salvar:", err);
+      alert("Erro ao salvar dados.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const hasVehicleImages = data.vehicleImages.some(img => img && img !== "");
 
   return (
-    <div className="min-h-screen max-w-5xl mx-auto pt-24 pb-4 px-4 sm:px-6 print:pt-0 print:pb-0 print:px-0 transition-all">
-      {isSaving && (
-        <div className="fixed inset-0 z-[200] bg-black/70 backdrop-blur-md flex items-center justify-center flex-col text-white gap-4">
+    <div 
+      className="min-h-screen pt-24 pb-4 px-4 sm:px-6 print:pt-0 print:pb-0 print:px-0 transition-all flex flex-col relative"
+      style={{ 
+        backgroundImage: (!settings.homeVideoUrl && (view === 'checklist' || !currentUser || showLoginModal || showSplash)) 
+          ? (((!currentUser || showLoginModal) && settings.loginBgUrl) ? `url(${settings.loginBgUrl})` : (settings.homeBgUrl ? `url(${settings.homeBgUrl})` : 'none'))
+          : 'none',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundAttachment: 'fixed'
+      }}
+    >
+      {/* Vídeo de fundo do sistema (Início / Login / Geral) */}
+      {settings.homeVideoUrl && (view === 'checklist' || !currentUser || showLoginModal || showSplash) && (
+        <div className="fixed inset-0 overflow-hidden pointer-events-none select-none -z-10 print:hidden">
+          {getYouTubeEmbedUrl(settings.homeVideoUrl) ? (
+            <iframe
+              src={getYouTubeEmbedUrl(settings.homeVideoUrl)!}
+              className="absolute top-1/2 left-1/2 w-[100vw] h-[100vh] min-w-[177.77vh] min-h-[56.25vw] -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-80"
+              allow="autoplay; encrypted-media; gyroscope; picture-in-picture"
+              title="Vídeo de Fundo do Sistema"
+            />
+          ) : (
+            <video
+              autoPlay
+              loop
+              muted
+              playsInline
+              className="absolute inset-0 w-full h-full object-cover opacity-80"
+              src={settings.homeVideoUrl}
+            />
+          )}
+          <div className="absolute inset-0 bg-black/35 backdrop-blur-[0.5px]" />
+        </div>
+      )}
+      {/* Barra de Sincronização em Tempo Real (Métricas exatas de carregamento de sistema e dados) */}
+      <SyncProgressBar 
+        info={syncProgress} 
+        onClose={() => setSyncProgress(prev => ({ ...prev, isActive: false }))} 
+        onRetry={performFullSync}
+      />
+
+      {showSplash && !currentUser && (
+        <div className="fixed inset-0 z-[500] flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-1000">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
+          <div className="relative space-y-12 max-w-lg w-full">
+            <div className="space-y-4">
+               {settings.headerLogoUrl1 && (
+                 <img src={settings.headerLogoUrl1} alt="Logo" className="h-32 mx-auto drop-shadow-2xl animate-pulse" />
+               )}
+               <div className="space-y-2">
+                 <h1 className="text-4xl md:text-6xl font-black text-white uppercase tracking-tighter drop-shadow-2xl">
+                   {settings.appName || 'Checklist Digital'}
+                 </h1>
+                 <div className="h-1 w-24 bg-blue-500 mx-auto rounded-full shadow-[0_0_20px_rgba(59,130,246,0.8)]" />
+                 <p className="text-blue-100/80 text-xs font-bold uppercase tracking-[0.3em] mt-4 drop-shadow-lg">
+                   {settings.appDescription || 'Sistema de Inspeção de Viaturas'}
+                 </p>
+               </div>
+            </div>
+
+            <button 
+              onClick={() => {
+                setShowSplash(false);
+                setShowLoginModal(true);
+                if (syncProgress.status !== 'syncing' && syncProgress.status !== 'completed') {
+                  performFullSync();
+                }
+              }}
+              className="group relative bg-white/10 backdrop-blur-md border border-white/20 text-white px-12 py-6 rounded-3xl text-sm font-black uppercase tracking-widest shadow-2xl hover:bg-white/20 transition-all active:scale-95 overflow-hidden"
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-blue-600/0 via-blue-600/20 to-blue-600/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
+              <span className="relative flex items-center gap-3">
+                Carregar Sistema
+                <RefreshCw className="w-5 h-5 group-hover:rotate-180 transition-transform duration-700" />
+              </span>
+            </button>
+
+            {syncProgress.status === 'syncing' ? (
+              <div className="mt-3 flex items-center justify-center gap-2 text-xs font-mono text-blue-300">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                <span>Carregando sistema e dados em tempo real...</span>
+              </div>
+            ) : syncProgress.status === 'completed' && syncProgress.totalTime !== undefined ? (
+              <div className="mt-3 flex items-center justify-center gap-2 text-xs font-mono text-emerald-300">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Sistema pronto • Carregado em {syncProgress.totalTime.toFixed(2)}s</span>
+              </div>
+            ) : null}
+
+            <div className="pt-10">
+               <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">
+                 Desenvolvido por {settings.developedBy || 'Corpo de Bombeiros'}
+               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="max-w-5xl mx-auto w-full flex-1">
+        {(isSaving || isLoggingIn) && (
+        <div className="fixed inset-0 z-[400] bg-black/70 backdrop-blur-md flex items-center justify-center flex-col text-white gap-4">
           <Loader2 className="w-12 h-12 animate-spin text-blue-400" />
           <div className="text-center">
-            <h3 className="font-black text-lg uppercase tracking-widest">Gravando Conferência</h3>
-            <p className="text-xs text-blue-200 font-bold opacity-70">Sincronizando protocolo digital...</p>
+            <h3 className="font-black text-lg uppercase tracking-widest">
+              {isLoggingIn ? 'Autenticando Usuário' : 'Gravando Conferência'}
+            </h3>
+            <p className="text-xs text-blue-200 font-bold opacity-70">
+              {isLoggingIn ? 'Validando credenciais na nuvem...' : 'Sincronizando protocolo digital...'}
+            </p>
           </div>
         </div>
       )}
@@ -1074,15 +1686,14 @@ const App: React.FC = () => {
               onExportModel={handleExportModel}
               onImportModel={handleImportModel}
               initialTab={activeTabInSettings} 
-              tabTrigger={settingsTabTrigger}
-              onTabChange={setActiveTabInSettings}
               setCurrentUser={setCurrentUser}
               googleUser={googleUser}
-              onGoogleSignIn={handleGoogleSignIn}
+              onGoogleSignIn={() => {}} // Not used as we use the component directly in Settings if needed
               onGoogleSync={handleGoogleSync}
               isSyncing={isSyncing}
               connectionStatus={connectionStatus}
               onCheckConnection={handleCheckConnection}
+              onPerformFullSync={performFullSync}
               reportConfig={reportConfig}
             />
           ) : view === 'dashboard' ? (
@@ -1092,11 +1703,35 @@ const App: React.FC = () => {
               justifications={justifications}
               onRefresh={fetchDashboardData}
               isLoading={isFetchingDashboardData}
+              lastSyncTime={lastSyncTime}
+              lastSyncDuration={lastSyncDuration}
+              onOpenSyncInfo={() => setSyncProgress(prev => ({ ...prev, isActive: true }))}
               onUpdateVehicles={(updatedVehicles) => handleSaveSettings({ ...settings, vehicles: updatedVehicles })}
               onViewReport={handleViewReport}
               onViewWeekly={handleViewWeekly}
               onViewMirror={handleViewMirror}
+              recentSuccessMessage={recentConferenceSuccess?.message}
+              lastCompletedPrefix={recentConferenceSuccess?.prefix}
+              onClearSuccessMessage={() => setRecentConferenceSuccess(null)}
             />
+          ) : (!currentUser && !googleUser) ? (
+            <div className="flex flex-col items-center justify-center py-20 px-6 text-center space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+               <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center">
+                  <ShieldCheck className="w-10 h-10 text-blue-600" />
+               </div>
+               <div className="space-y-2">
+                  <h3 className="text-xl font-black uppercase text-gray-900">Acesso Restrito</h3>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-widest leading-relaxed max-w-xs mx-auto">
+                    Somente usuários logados no sistema podem realizar o checklist de viatura.
+                  </p>
+               </div>
+               <button 
+                 onClick={() => setShowLoginModal(true)}
+                 className="bg-blue-600 text-white px-10 py-4 rounded-2xl text-xs font-black uppercase shadow-xl hover:bg-blue-700 transition-all active:scale-95"
+               >
+                 Entrar no Sistema
+               </button>
+            </div>
           ) : (
             <>
               <section className="bg-gray-50/50 p-4 rounded-xl border border-gray-100 space-y-4 print:p-2 print:bg-transparent print:border-none">
@@ -1181,8 +1816,8 @@ const App: React.FC = () => {
                         {settings.vehicles
                           ?.filter(v => !selectedStationFilter || v.station === selectedStationFilter)
                           ?.sort((a,b) => (a.prefix || '').localeCompare(b.prefix || ''))
-                          .map(v => (
-                            <option key={v.id} value={v.prefix}>{v.prefix} - {v.plate}</option>
+                          .map((v, vIdx) => (
+                            <option key={`${v.id || v.prefix}-${vIdx}`} value={v.prefix}>{v.prefix} - {v.plate}</option>
                           ))}
                       </select>
                       {(!settings.vehicles?.some(v => v.prefix === data.prefix) && data.prefix !== undefined) && (
@@ -1357,12 +1992,15 @@ const App: React.FC = () => {
            </div>
            <div className="flex flex-col">
               <span className="text-[9px] font-black text-gray-900 leading-none truncate max-w-[60px] uppercase">
-                {googleUser ? googleUser.displayName?.split(' ')[0] : (currentUser ? (currentUser.name || currentUser.username || '').split(' ')[0] : 'PERFIL')}
+                {googleUser ? googleUser.name?.split(' ')[0] : (currentUser ? (currentUser.name || currentUser.username || '').split(' ')[0] : 'PERFIL')}
               </span>
               {googleUser ? (
-                <div className="flex items-center gap-0.5">
-                  <Cloud className="w-1.5 h-1.5 text-green-500" />
-                  <span className="text-[6px] font-black text-green-500 uppercase">Cloud</span>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-0.5">
+                    <Cloud className="w-1.5 h-1.5 text-green-500" />
+                    <span className="text-[6px] font-black text-green-500 uppercase">Cloud</span>
+                  </div>
+                  <button onClick={handleLogout} className="text-[6px] font-black text-red-500 uppercase text-left hover:underline">Sair</button>
                 </div>
               ) : (
                 currentUser ? (
@@ -1375,7 +2013,7 @@ const App: React.FC = () => {
         </div>
 
         {/* 2. Dashboard */}
-        {hasPermission('reports') && (
+        {hasPermission('dashboard') && (
           <button 
             onClick={() => setView('dashboard')} 
             className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all shrink-0 ${view === 'dashboard' ? 'bg-blue-50 text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
@@ -1441,30 +2079,42 @@ const App: React.FC = () => {
             <Info className="w-5 h-5" />
           </button>
 
-          <button 
-            onClick={() => { 
-              setActiveTabInSettings('items'); 
-              setSettingsTabTrigger(prev => prev + 1);
-              setView('settings'); 
-            }} 
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all shrink-0 ${view === 'settings' && activeTabInSettings !== 'manual' && activeTabInSettings !== 'about' ? 'bg-blue-50 text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
-            title="Ajustes"
-          >
-            <SettingsIcon className="w-5 h-5 text-blue-500" />
-            <span className="text-xs font-bold hidden md:inline">Ajustes</span>
-          </button>
+          {hasPermission('settings') && (
+            <button 
+              onClick={() => { setActiveTabInSettings('login'); setView('settings'); }} 
+              className={`p-2 rounded-xl transition-all shrink-0 ${view === 'settings' && (activeTabInSettings === 'login' || activeTabInSettings === 'admin') ? 'bg-red-50 text-red-600' : 'text-gray-400 hover:bg-gray-50'}`}
+              title="Ajustes"
+            >
+              <SettingsIcon className="w-5 h-5" />
+            </button>
+          )}
         </div>
       </div>
 
       {showLoginModal && (
         <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm space-y-8 border-t-4 border-blue-600 animate-in fade-in zoom-in duration-300">
+          <div className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm space-y-6 border-t-4 border-blue-600 animate-in fade-in zoom-in duration-300 overflow-hidden">
+            {(settings.loginBgUrl || settings.homeBgUrl) && (
+              <div className="-mx-8 -mt-8 mb-2 h-28 overflow-hidden relative shadow-inner">
+                <img 
+                  src={settings.loginBgUrl || settings.homeBgUrl} 
+                  alt="Início Login" 
+                  className="w-full h-full object-cover" 
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex items-end p-4">
+                  <div className="text-white">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-blue-300">Acesso ao Sistema</span>
+                    <h3 className="text-sm font-black uppercase tracking-tight truncate">{settings.appName || 'Checklist Digital'}</h3>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="flex justify-between items-start">
                <div className="space-y-1">
                   <h2 className="text-2xl font-black text-gray-900 uppercase tracking-tighter">Entrar</h2>
                   <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest text-blue-600">Identificação de Usuário</p>
                </div>
-               <button onClick={() => setShowLoginModal(false)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors"><X className="w-5 h-5 text-gray-400" /></button>
+               <button onClick={() => { setShowLoginModal(false); }} className="p-2 hover:bg-gray-100 rounded-xl transition-colors"><X className="w-5 h-5 text-gray-400" /></button>
             </div>
 
             <form onSubmit={handleLogin} className="space-y-4">
@@ -1507,23 +2157,16 @@ const App: React.FC = () => {
                 <div className="relative flex justify-center text-[8px] font-black uppercase tracking-widest"><span className="bg-white px-2 text-gray-300">Ou use sua conta corporativa</span></div>
               </div>
 
-              <button 
-                type="button"
-                onClick={handleGoogleLogin}
-                className="w-full bg-white border-2 border-gray-100 hover:border-blue-500 hover:bg-blue-50 text-gray-600 font-black py-4 rounded-2xl shadow-sm transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-3 active:scale-95"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24">
-                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-                </svg>
-                Entrar com Google
-              </button>
+              <GoogleLoginButton 
+                onSuccess={handleGoogleLoginSuccess}
+                isLoggingIn={isLoggingIn}
+                setIsLoggingIn={setIsLoggingIn}
+              />
             </form>
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

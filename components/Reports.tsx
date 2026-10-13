@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { Justification, LogEntry, AppSettings, User } from "../types";
+import { Justification, LogEntry, AppSettings, User, UserPermissions } from "../types";
 import { Header } from "./Header";
 import { Footer } from "./Footer";
 import { FleetDashboard } from "./FleetDashboard";
@@ -9,6 +9,8 @@ import {
   Printer,
   Calendar,
   Filter,
+  TrendingUp,
+  TrendingDown,
   ChevronRight,
   AlertCircle,
   BarChart,
@@ -26,10 +28,12 @@ import {
   Lock,
   ShieldCheck,
   Shield,
-  Activity,
+  Zap,
+  Camera,
 } from "lucide-react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import { getAvailableMonthsList } from "../services/dateFilterService";
 
 interface ReportsProps {
   logs: LogEntry[];
@@ -59,6 +63,7 @@ type ReportType =
   | "retroactive_logs"
   | "final_monthly_book"
   | "fleet_dashboard"
+  | "km_monthly"
   | null;
 
 export const Reports: React.FC<ReportsProps> = ({
@@ -416,7 +421,7 @@ export const Reports: React.FC<ReportsProps> = ({
   );
   const [prefixSearch, setPrefixSearch] = useState<string>("");
   const [postoFilter, setPostoFilter] = useState<string>("");
-  const [vehicleStatusFilter, setVehicleStatusFilter] = useState<string>("");
+  const [sgbFilter, setSgbFilter] = useState<string>("");
   const [bookConfig, setBookConfig] = useState({
     includeDaily: true,
     includeJustifications: true,
@@ -634,8 +639,8 @@ export const Reports: React.FC<ReportsProps> = ({
     {
       date: true,
       prefix: true,
-      vehicleStatus: true,
       plate: true,
+      vehicleStatus: true,
       km: true,
       type: true,
       inspector: true,
@@ -647,6 +652,7 @@ export const Reports: React.FC<ReportsProps> = ({
   );
   const [statusFilter, setStatusFilter] = useState<"all" | "ok" | "cn">("all");
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
+  const [previewNoveltyPhoto, setPreviewNoveltyPhoto] = useState<string | null>(null);
   const [autoPrint, setAutoPrint] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [viewingJsonData, setViewingJsonData] = useState<{
@@ -657,57 +663,104 @@ export const Reports: React.FC<ReportsProps> = ({
   const printMirrorRef = useRef<HTMLDivElement>(null);
   const reportRef = useRef<HTMLDivElement>(null);
 
-  const normalizePrefix = (p: any) =>
-    String(p || "")
-      .replace(/[-\s]/g, "")
-      .toUpperCase();
-
-  const getLogVehicleStatus = (
-    log: LogEntry | null | undefined,
-  ): "OPERANDO" | "RESERVA" | "BAIXADA" => {
-    if (!log) return "OPERANDO";
-    const raw = String(log.vehicleStatus || "OPERANDO").toUpperCase().trim();
-    if (raw === "BAIXADA") return "BAIXADA";
-    if (raw === "RESERVA") return "RESERVA";
+  const getNormalizedVehicleStatus = (log: LogEntry): "OPERANDO" | "RESERVA" | "BAIXADA" => {
+    const raw = String(log.vehicleStatus || "").trim().toUpperCase();
+    if (raw === "BAIXADA" || raw === "BX") return "BAIXADA";
+    if (raw === "RESERVA" || raw === "RS") return "RESERVA";
     return "OPERANDO";
   };
 
-  const renderVehicleStatusBadge = (
-    status: "OPERANDO" | "RESERVA" | "BAIXADA" | string | null | undefined,
-    size: "sm" | "md" = "sm",
-  ) => {
-    const norm = String(status || "OPERANDO").toUpperCase().trim();
-    const textSize = size === "sm" ? "text-[8px]" : "text-[9px]";
-    const dotSize = size === "sm" ? "w-1.5 h-1.5" : "w-2 h-2";
-    if (norm === "BAIXADA") {
+  const getVehicleStatusBadge = (status: "OPERANDO" | "RESERVA" | "BAIXADA") => {
+    if (status === "BAIXADA") {
       return (
-        <span
-          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${textSize} font-black uppercase bg-red-100 text-red-700 border border-red-200 shrink-0`}
-        >
-          <span className={`${dotSize} rounded-full bg-red-600`}></span>
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-red-100 text-red-800 border border-red-200 shadow-2xs">
+          <span className="w-1.5 h-1.5 rounded-full bg-red-600"></span>
           Baixada
         </span>
       );
     }
-    if (norm === "RESERVA") {
+    if (status === "RESERVA") {
       return (
-        <span
-          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${textSize} font-black uppercase bg-amber-100 text-amber-700 border border-amber-200 shrink-0`}
-        >
-          <span className={`${dotSize} rounded-full bg-amber-500`}></span>
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-amber-100 text-amber-800 border border-amber-200 shadow-2xs">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
           Reserva
         </span>
       );
     }
     return (
-      <span
-        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${textSize} font-black uppercase bg-emerald-100 text-emerald-700 border border-emerald-200 shrink-0`}
-      >
-        <span className={`${dotSize} rounded-full bg-emerald-600`}></span>
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-2xs">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
         Operando
       </span>
     );
   };
+
+  const getVehicleStatusCounts = (logsList: LogEntry[]) => {
+    let operando = 0;
+    let reserva = 0;
+    let baixada = 0;
+    logsList.forEach((l) => {
+      const st = getNormalizedVehicleStatus(l);
+      if (st === "OPERANDO") operando++;
+      else if (st === "RESERVA") reserva++;
+      else if (st === "BAIXADA") baixada++;
+    });
+    return { operando, reserva, baixada, total: logsList.length };
+  };
+
+  const renderVehicleStatusCards = (counts: {
+    operando: number;
+    reserva: number;
+    baixada: number;
+    total?: number;
+  }) => (
+    <div className="grid grid-cols-3 gap-3 no-print">
+      <div className="bg-emerald-50 border-2 border-emerald-100 p-3.5 rounded-2xl flex items-center justify-between shadow-2xs">
+        <div>
+          <p className="text-[9px] font-black text-emerald-600 uppercase tracking-wider">
+            Operando
+          </p>
+          <p className="text-xl font-black text-emerald-950 mt-0.5">
+            {counts.operando}
+          </p>
+        </div>
+        <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-black text-xs shadow-xs">
+          OP
+        </div>
+      </div>
+      <div className="bg-amber-50 border-2 border-amber-100 p-3.5 rounded-2xl flex items-center justify-between shadow-2xs">
+        <div>
+          <p className="text-[9px] font-black text-amber-600 uppercase tracking-wider">
+            Reserva
+          </p>
+          <p className="text-xl font-black text-amber-950 mt-0.5">
+            {counts.reserva}
+          </p>
+        </div>
+        <div className="w-8 h-8 rounded-xl bg-amber-600 text-white flex items-center justify-center font-black text-xs shadow-xs">
+          RS
+        </div>
+      </div>
+      <div className="bg-red-50 border-2 border-red-100 p-3.5 rounded-2xl flex items-center justify-between shadow-2xs">
+        <div>
+          <p className="text-[9px] font-black text-red-600 uppercase tracking-wider">
+            Baixada
+          </p>
+          <p className="text-xl font-black text-red-950 mt-0.5">
+            {counts.baixada}
+          </p>
+        </div>
+        <div className="w-8 h-8 rounded-xl bg-red-600 text-white flex items-center justify-center font-black text-xs shadow-xs">
+          BX
+        </div>
+      </div>
+    </div>
+  );
+
+  const normalizePrefix = (p: any) =>
+    String(p || "")
+      .replace(/[-\s]/g, "")
+      .toUpperCase();
 
   const getItemStatusFromLog = (
     log: LogEntry,
@@ -892,7 +945,7 @@ export const Reports: React.FC<ReportsProps> = ({
 
       // Capturar o conteúdo interno para evitar cortes do container com scroll
       const canvas = await html2canvas(element, {
-        scale: 2,
+        scale: 1.5,
         useCORS: true,
         logging: false,
         backgroundColor: "#ffffff",
@@ -919,8 +972,13 @@ export const Reports: React.FC<ReportsProps> = ({
         },
       });
 
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF("p", "mm", "a4");
+      const imgData = canvas.toDataURL("image/jpeg", 0.6);
+      const pdf = new jsPDF({
+        orientation: "p",
+        unit: "mm",
+        format: "a4",
+        compress: true
+      });
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
 
@@ -931,14 +989,14 @@ export const Reports: React.FC<ReportsProps> = ({
       let position = 0;
 
       // Primeira página
-      pdf.addImage(imgData, "PNG", 0, position, pdfWidth, contentHeight);
+      pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, contentHeight, undefined, 'FAST');
       heightLeft -= pdfHeight;
 
       // Páginas subsequentes
       while (heightLeft > 0) {
         position = heightLeft - contentHeight;
         pdf.addPage();
-        pdf.addImage(imgData, "PNG", 0, position, pdfWidth, contentHeight);
+        pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, contentHeight, undefined, 'FAST');
         heightLeft -= pdfHeight;
       }
 
@@ -972,7 +1030,7 @@ export const Reports: React.FC<ReportsProps> = ({
         element;
 
       const canvas = await html2canvas(contentElement, {
-        scale: 2,
+        scale: 1.5,
         useCORS: true,
         logging: false,
         backgroundColor: "#ffffff",
@@ -995,8 +1053,13 @@ export const Reports: React.FC<ReportsProps> = ({
         },
       });
 
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF("p", "mm", "a4");
+      const imgData = canvas.toDataURL("image/jpeg", 0.6);
+      const pdf = new jsPDF({
+        orientation: "p",
+        unit: "mm",
+        format: "a4",
+        compress: true
+      });
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
 
@@ -1007,14 +1070,14 @@ export const Reports: React.FC<ReportsProps> = ({
       let position = 0;
 
       // Primeira página
-      pdf.addImage(imgData, "PNG", 0, position, pdfWidth, contentHeight);
+      pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, contentHeight, undefined, 'FAST');
       heightLeft -= pdfHeight;
 
       // Páginas subsequentes
       while (heightLeft > 0) {
         position = heightLeft - contentHeight;
         pdf.addPage();
-        pdf.addImage(imgData, "PNG", 0, position, pdfWidth, contentHeight);
+        pdf.addImage(imgData, "JPEG", 0, position, pdfWidth, contentHeight, undefined, 'FAST');
         heightLeft -= pdfHeight;
       }
 
@@ -1078,97 +1141,18 @@ export const Reports: React.FC<ReportsProps> = ({
     return Array.from(stations).sort();
   }, [settings.stations, settings.vehicles]);
 
-  const vehicleStatusMap = useMemo(() => {
-    const map: Record<
-      string,
-      {
-        latestOperationalStatus: "OPERANDO" | "RESERVA" | "BAIXADA";
-        hasBaixada: boolean;
-        hasReserva: boolean;
-        hasOperando: boolean;
-        hasNovelty: boolean;
-        hasRegular: boolean;
-        totalLogs: number;
-      }
-    > = {};
-
-    const sortedLogs = [...logs].sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
-    );
-
-    sortedLogs.forEach((log) => {
-      const p = normalizePrefix(log.prefix);
-      if (!p) return;
-      const logMonth = parseLogDateToMonth(log.date);
-      if (monthFilter && logMonth !== monthFilter) return;
-
-      const rawOp = (log.vehicleStatus || "OPERANDO").toUpperCase();
-      const opStatus: "OPERANDO" | "RESERVA" | "BAIXADA" =
-        rawOp === "BAIXADA" || rawOp === "RESERVA" ? rawOp : "OPERANDO";
-
-      if (!map[p]) {
-        map[p] = {
-          latestOperationalStatus: opStatus,
-          hasBaixada: false,
-          hasReserva: false,
-          hasOperando: false,
-          hasNovelty: false,
-          hasRegular: false,
-          totalLogs: 0,
-        };
-      }
-
-      if (opStatus === "BAIXADA") map[p].hasBaixada = true;
-      else if (opStatus === "RESERVA") map[p].hasReserva = true;
-      else map[p].hasOperando = true;
-
-      const itemsStatus = (log.itemsStatus || "").toUpperCase();
-      if (itemsStatus.includes("CN")) {
-        map[p].hasNovelty = true;
-      } else {
-        map[p].hasRegular = true;
-      }
-
-      map[p].totalLogs += 1;
+  const uniqueSgbs = useMemo(() => {
+    const sgbs = new Set<string>();
+    if (settings.sgbs && settings.sgbs.length > 0) {
+      settings.sgbs.forEach((s) => {
+        if (s.name) sgbs.add(s.name);
+      });
+    }
+    settings.vehicles?.forEach((v) => {
+      if (v.sgb) sgbs.add(v.sgb);
     });
-
-    return map;
-  }, [logs, monthFilter]);
-
-  const statusCounts = useMemo(() => {
-    let operando = 0;
-    let baixada = 0;
-    let reserva = 0;
-    let ok = 0;
-    let cn = 0;
-
-    uniquePrefixes.forEach((prefix) => {
-      if (postoFilter) {
-        const vehicle = settings.vehicles?.find(
-          (v) => normalizePrefix(v.prefix) === prefix,
-        );
-        if (
-          !vehicle ||
-          normalizePrefix(vehicle.station) !== normalizePrefix(postoFilter)
-        ) {
-          return;
-        }
-      }
-
-      const info = vehicleStatusMap[prefix];
-      if (info) {
-        if (info.hasOperando || (!info.hasBaixada && !info.hasReserva)) operando++;
-        if (info.hasBaixada) baixada++;
-        if (info.hasReserva) reserva++;
-        if (info.hasRegular) ok++;
-        if (info.hasNovelty) cn++;
-      } else {
-        operando++;
-      }
-    });
-
-    return { operando, baixada, reserva, ok, cn };
-  }, [uniquePrefixes, vehicleStatusMap, postoFilter, settings.vehicles]);
+    return Array.from(sgbs).sort();
+  }, [settings.sgbs, settings.vehicles]);
 
   const visiblePrefixes = useMemo(() => {
     return uniquePrefixes.filter((prefix) => {
@@ -1176,56 +1160,32 @@ export const Reports: React.FC<ReportsProps> = ({
         !prefixSearch ||
         prefix.includes(normalizePrefix(prefixSearch));
 
-      if (!matchesSearch) return false;
+      const vehicle = settings.vehicles?.find(
+        (v) => normalizePrefix(v.prefix) === prefix,
+      );
 
-      if (postoFilter) {
-        const vehicle = settings.vehicles?.find(
-          (v) => normalizePrefix(v.prefix) === prefix,
-        );
-        if (
-          !vehicle ||
-          normalizePrefix(vehicle.station) !== normalizePrefix(postoFilter)
-        ) {
-          return false;
-        }
-      }
+      const matchesPosto = !postoFilter || (vehicle && normalizePrefix(vehicle.station) === normalizePrefix(postoFilter));
+      const matchesSgb = !sgbFilter || (vehicle && normalizePrefix(vehicle.sgb || "") === normalizePrefix(sgbFilter));
 
-      if (vehicleStatusFilter) {
-        const info = vehicleStatusMap[prefix];
-        if (vehicleStatusFilter === "OPERANDO") {
-          const isOperando =
-            info?.hasOperando || (!info?.hasBaixada && !info?.hasReserva);
-          if (!isOperando) return false;
-        } else if (vehicleStatusFilter === "BAIXADA") {
-          if (!info?.hasBaixada) return false;
-        } else if (vehicleStatusFilter === "RESERVA") {
-          if (!info?.hasReserva) return false;
-        } else if (vehicleStatusFilter === "OK") {
-          if (!info?.hasRegular) return false;
-        } else if (vehicleStatusFilter === "CN") {
-          if (!info?.hasNovelty) return false;
-        }
-      }
-
-      return true;
+      return matchesSearch && matchesPosto && matchesSgb;
     });
-  }, [
-    uniquePrefixes,
-    prefixSearch,
-    postoFilter,
-    vehicleStatusFilter,
-    vehicleStatusMap,
-    settings.vehicles,
-  ]);
+  }, [uniquePrefixes, prefixSearch, postoFilter, sgbFilter, settings.vehicles]);
 
   const uniqueMonths = useMemo(() => {
-    const months = new Set<string>();
-    logs.forEach((log) => {
-      const month = parseLogDateToMonth(log.date);
-      if (month) months.add(month);
-    });
-    return Array.from(months).sort((a, b) => b.localeCompare(a)); // Mais recentes primeiro
+    return getAvailableMonthsList(logs).map((m) => m.value);
   }, [logs]);
+
+  const handleMonthChange = async (newMonth: string) => {
+    setMonthFilter(newMonth);
+    if (!newMonth || newMonth === "all") {
+      await onFetch("", "all");
+    } else {
+      const hasLogs = logs.some((l) => parseLogDateToMonth(l.date) === newMonth);
+      if (!hasLogs) {
+        await onFetch(undefined, newMonth);
+      }
+    }
+  };
 
   const getMonthLabel = (monthStr: string) => {
     if (!monthStr) return "Todos os Meses";
@@ -1256,27 +1216,9 @@ export const Reports: React.FC<ReportsProps> = ({
       const matchesPrefix =
         selectedPrefixes.size === 0 || selectedPrefixes.has(normLogPrefix);
 
-      if (!matchesMonth || !matchesPrefix) return false;
-
-      if (vehicleStatusFilter) {
-        const opStatus = (log.vehicleStatus || "OPERANDO").toUpperCase();
-        const itemsStatus = (log.itemsStatus || "").toUpperCase();
-
-        if (vehicleStatusFilter === "OPERANDO" && opStatus !== "OPERANDO")
-          return false;
-        if (vehicleStatusFilter === "BAIXADA" && opStatus !== "BAIXADA")
-          return false;
-        if (vehicleStatusFilter === "RESERVA" && opStatus !== "RESERVA")
-          return false;
-        if (vehicleStatusFilter === "CN" && !itemsStatus.includes("CN"))
-          return false;
-        if (vehicleStatusFilter === "OK" && itemsStatus.includes("CN"))
-          return false;
-      }
-
-      return true;
+      return matchesMonth && matchesPrefix;
     });
-  }, [logs, monthFilter, selectedPrefixes, vehicleStatusFilter]);
+  }, [logs, monthFilter, selectedPrefixes]);
 
   const togglePrefix = (prefix: string) => {
     const newSelected = new Set(selectedPrefixes);
@@ -2688,12 +2630,9 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        <div className={`grid ${vehicleStatusFilter ? "grid-cols-4" : "grid-cols-3"} border-2 border-black text-[9px] font-black uppercase divide-x-2 divide-black bg-white mb-6`}>
+        <div className="grid grid-cols-3 border-2 border-black text-[9px] font-black uppercase divide-x-2 divide-black bg-white mb-6">
           <div className="px-3 py-2 bg-gray-50">Viatura: <span className="text-blue-700 ml-1">{selectedPrefix}</span></div>
           <div className="px-3 py-2 bg-gray-50">Mês de Referência: <span className="text-blue-700 ml-1">{getMonthLabel(monthFilter).toUpperCase()}</span></div>
-          {vehicleStatusFilter && (
-            <div className="px-3 py-2 bg-gray-50">Status: <span className="text-blue-700 ml-1">{vehicleStatusFilter}</span></div>
-          )}
           <div className="px-3 py-2 bg-gray-50">Emitido em: <span className="text-blue-700 ml-1">{new Date().toLocaleString("pt-BR")}</span></div>
         </div>
 
@@ -3143,68 +3082,6 @@ export const Reports: React.FC<ReportsProps> = ({
     );
   };
 
-  const extractLogNovelties = (log: LogEntry) => {
-    const list: Array<{ label: string; status: string; observation?: string; photos?: string[] }> = [];
-    const seen = new Set<string>();
-
-    // 1. Tentar ler de itemsDetail se existir
-    if (log.itemsDetail) {
-      try {
-        const details = typeof log.itemsDetail === "string" ? JSON.parse(log.itemsDetail) : log.itemsDetail;
-        if (Array.isArray(details)) {
-          details.forEach((d: any) => {
-            const st = String(d?.status || "").trim().toUpperCase();
-            if (st === "CN" || st === "N" || st.includes("COM NOVIDADE") || st === "AVARIA" || st === "DEFEITO") {
-              const label = String(d?.label || d?.description || d?.name || "Item sem descrição").trim();
-              if (label && !seen.has(label.toLowerCase())) {
-                seen.add(label.toLowerCase());
-                list.push({
-                  label,
-                  status: "CN",
-                  observation: d.observation || "",
-                  photos: Array.isArray(d.photos) ? d.photos : [],
-                });
-              }
-            }
-          });
-        }
-      } catch (e) {}
-    }
-
-    // 2. Tentar ler de fullData / getFullData(log)
-    const full = getFullData(log);
-    if (full) {
-      const candidateItems = full.items || full.checklistItems || full.InspectionItems || full.data?.items;
-      if (Array.isArray(candidateItems)) {
-        candidateItems.forEach((d: any) => {
-          const st = String(d?.status || "").trim().toUpperCase();
-          if (st === "CN" || st === "N" || st.includes("COM NOVIDADE") || st === "AVARIA" || st === "DEFEITO") {
-            const label = String(d?.label || d?.description || d?.name || "Item sem descrição").trim();
-            if (label) {
-              const existing = list.find((it) => it.label.toLowerCase() === label.toLowerCase());
-              if (existing) {
-                if (!existing.observation && d.observation) existing.observation = d.observation;
-                if ((!existing.photos || existing.photos.length === 0) && Array.isArray(d.photos)) {
-                  existing.photos = d.photos;
-                }
-              } else {
-                seen.add(label.toLowerCase());
-                list.push({
-                  label,
-                  status: "CN",
-                  observation: d.observation || "",
-                  photos: Array.isArray(d.photos) ? d.photos : [],
-                });
-              }
-            }
-          }
-        });
-      }
-    }
-
-    return list;
-  };
-
   const renderNoveltiesReport = (customPrefix?: string) => {
     const sourceLogs = customPrefix
       ? logs.filter((log) => {
@@ -3215,54 +3092,136 @@ export const Reports: React.FC<ReportsProps> = ({
         })
       : filteredLogs;
 
-    // Filtrar estritamente checklists que foram marcados com novidade
-    const novelties = sourceLogs
+    // Helper para extrair itens com novidade de forma robusta e completa
+    const getNoveltyItemsForLog = (log: LogEntry) => {
+      let items: any[] = [];
+      try {
+        if (log.itemsDetail) {
+          const parsed = typeof log.itemsDetail === "string" ? JSON.parse(log.itemsDetail) : log.itemsDetail;
+          if (Array.isArray(parsed)) items = parsed;
+        }
+      } catch (e) {}
+
+      const full = getFullData(log);
+      let fullItems: any[] = [];
+      if (full) {
+        if (Array.isArray(full.items)) fullItems = full.items;
+        else if (Array.isArray(full.checklistItems)) fullItems = full.checklistItems;
+        else if (Array.isArray(full.InspectionItems)) fullItems = full.InspectionItems;
+      }
+
+      if (items.length === 0 && fullItems.length > 0) {
+        items = fullItems;
+      }
+
+      const isCn = (item: any) => {
+        const s = String(item?.status || "").trim().toUpperCase();
+        return (
+          s === "CN" ||
+          s === "C/N" ||
+          s === "COM NOVIDADE" ||
+          s === "AVARIADO" ||
+          s === "N" ||
+          s === "IRREGULAR" ||
+          s === "DEFEITO"
+        );
+      };
+
+      let cnList = items.filter(isCn);
+
+      if (fullItems.length > 0) {
+        if (cnList.length === 0) {
+          cnList = fullItems.filter(isCn);
+        } else {
+          cnList = cnList.map((item: any) => {
+            const labelNorm = String(item.label || item.description || "").trim().toLowerCase();
+            const fullMatch = fullItems.find((fi: any) => {
+              const fiLabel = String(fi.label || fi.description || "").trim().toLowerCase();
+              return fiLabel === labelNorm || (item.id && fi.id === item.id);
+            });
+            if (fullMatch) {
+              return {
+                ...item,
+                photos: (fullMatch.photos && Array.isArray(fullMatch.photos)) ? fullMatch.photos : (item.photos || []),
+                observation: item.observation || fullMatch.observation || ""
+              };
+            }
+            return item;
+          });
+        }
+      }
+
+      // Se cnList continua vazia, mas itemsStatus explicitamente indica CN (ex: "1 CN" ou "2 CN") e não "0 CN"
+      if (cnList.length === 0) {
+        const s = String(log.itemsStatus || "").toUpperCase();
+        const hasExplicitCn =
+          s.includes("CN") &&
+          !s.includes("0 CN") &&
+          !s.includes("0CN") &&
+          !s.includes("0/CN");
+
+        if (hasExplicitCn) {
+          cnList.push({
+            label: "Item Avariado Constatado no Checklist",
+            status: "CN",
+            observation: log.generalObservation || `Constatado no status: ${log.itemsStatus}`,
+            photos: []
+          });
+        }
+      }
+
+      return cnList;
+    };
+
+    // Exibir SOMENTE nos dias que tiverem checklist marcado com novidade
+    const processedNovelties = sourceLogs
       .map((log) => {
-        const cnItems = extractLogNovelties(log);
+        const cnItems = getNoveltyItemsForLog(log);
         return {
           log,
           cnItems,
+          hasNovelty: cnItems.length > 0
         };
       })
-      .filter(({ log, cnItems }) => {
-        // 1. Possui itens efetivamente marcados como CN
-        if (cnItems.length > 0) return true;
+      .filter((entry) => entry.hasNovelty);
 
-        // 2. Ou possui resumo explícito de CN maior que 0 no itemsStatus (ex: "28 SN / 2 CN" ou "1 CN")
-        const statusStr = String(log.itemsStatus || "").trim();
-        const cnMatch = statusStr.match(/(\d+)\s*CN/i);
-        if (cnMatch) {
-          const count = parseInt(cnMatch[1], 10);
-          return count > 0;
-        }
-
-        // Se o status for apenas "CN" (sem ser "0 CN")
-        if (/\bCN\b/i.test(statusStr) && !/\b0\s*CN\b/i.test(statusStr)) {
-          return true;
-        }
-
-        return false;
-      });
-
-    let totalCnItems = 0;
-    novelties.forEach(({ log, cnItems }) => {
-      if (cnItems.length > 0) {
-        totalCnItems += cnItems.length;
-      } else {
-        const match = String(log.itemsStatus || "").match(/(\d+)\s*CN/i);
-        if (match) {
-          totalCnItems += parseInt(match[1], 10);
-        } else {
-          totalCnItems += 1;
-        }
-      }
+    const sortedNovelties = [...processedNovelties].sort((a, b) => {
+      const timeA = new Date(a.log.date).getTime() || 0;
+      const timeB = new Date(b.log.date).getTime() || 0;
+      return timeB - timeA;
     });
+
+    const totalCnItems = sortedNovelties.reduce(
+      (acc, curr) => acc + curr.cnItems.length,
+      0
+    );
+
+    const uniqueVehiclesCount = new Set(
+      sortedNovelties.map((item) => normalizePrefix(item.log.prefix))
+    ).size;
+
+    const getLogDateInfo = (dateStr: string) => {
+      const comps = parseDateToComponents(dateStr);
+      const formattedFull = formatDate(dateStr);
+      if (comps) {
+        const dayStr = String(comps.day).padStart(2, "0");
+        const monthStr = String(comps.month).padStart(2, "0");
+        return {
+          dayBadge: `Dia ${dayStr}/${monthStr}/${comps.year}`,
+          fullDate: formattedFull || `${dayStr}/${monthStr}/${comps.year}`
+        };
+      }
+      return {
+        dayBadge: "Data Registrada",
+        fullDate: formattedFull || dateStr
+      };
+    };
 
     return (
       <div className="space-y-6">
         <div className="flex justify-between items-center border-b pb-4 print:pb-2">
           <div>
-            <h3 className="text-xl font-black uppercase text-gray-900 text-red-600">
+            <h3 className="text-xl font-black uppercase text-red-600">
               Relatório de Novidades Constatadas
             </h3>
             <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
@@ -3270,7 +3229,7 @@ export const Reports: React.FC<ReportsProps> = ({
               {customPrefix || (selectedPrefixes.size > 0
                 ? Array.from(selectedPrefixes).join(", ")
                 : "Todas as Viaturas")}{" "}
-              | {monthFilter || "TODOS"}{vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
+              | {monthFilter}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -3281,17 +3240,30 @@ export const Reports: React.FC<ReportsProps> = ({
         </div>
 
         {/* Resumo de Novidades */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 no-print">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 no-print">
           <div className="bg-red-50 border-2 border-red-100 p-4 rounded-3xl flex items-center gap-4">
             <div className="bg-red-600 p-3 rounded-2xl text-white shadow-lg">
               <AlertCircle className="w-6 h-6" />
             </div>
             <div>
               <p className="text-[10px] font-black text-red-500 uppercase">
-                Checklists com Novidades
+                Viaturas com Novidades
               </p>
               <p className="text-xl font-black text-red-900">
-                {novelties.length}
+                {uniqueVehiclesCount}
+              </p>
+            </div>
+          </div>
+          <div className="bg-rose-50 border-2 border-rose-100 p-4 rounded-3xl flex items-center gap-4">
+            <div className="bg-rose-600 p-3 rounded-2xl text-white shadow-lg">
+              <Calendar className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black text-rose-500 uppercase">
+                Dias / Checklists com Novidades
+              </p>
+              <p className="text-xl font-black text-rose-900">
+                {sortedNovelties.length}
               </p>
             </div>
           </div>
@@ -3311,49 +3283,56 @@ export const Reports: React.FC<ReportsProps> = ({
         </div>
 
         <div className="space-y-6">
-          {novelties.map(({ log, cnItems }, idx) => {
-            const countItems = cnItems.length > 0
-              ? cnItems.length
-              : (() => {
-                  const m = String(log.itemsStatus || "").match(/(\d+)\s*CN/i);
-                  return m ? parseInt(m[1], 10) : 1;
-                })();
+          {sortedNovelties.map(({ log, cnItems }, idx) => {
+            const dateInfo = getLogDateInfo(log.date);
 
             return (
               <div
                 key={`${log.id}-${idx}`}
-                className="border-2 rounded-[2rem] p-6 space-y-4 bg-white print:break-inside-avoid shadow-sm hover:shadow-md transition-shadow"
+                className="border-2 border-red-100 rounded-[2rem] p-6 space-y-4 bg-white print:break-inside-avoid shadow-sm hover:shadow-md transition-shadow relative overflow-hidden"
               >
-                <div className="flex justify-between items-start border-b border-gray-100 pb-4">
+                <div className="flex flex-col sm:flex-row justify-between sm:items-center border-b border-gray-100 pb-4 gap-3">
                   <div className="flex items-center gap-3">
-                    <div className="bg-red-600 text-white p-2 rounded-xl shadow-md">
-                      <AlertCircle className="w-4 h-4" />
+                    <div className="bg-red-600 text-white p-2.5 rounded-2xl shadow-md">
+                      <AlertCircle className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="text-sm font-black uppercase text-gray-900 tracking-tight">
-                        {log.prefix}{" "}
-                        <span className="text-gray-400 font-bold ml-1">
-                          ({log.plate})
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="bg-red-600 text-white text-[10px] font-black uppercase px-2.5 py-0.5 rounded-lg shadow-xs">
+                          {dateInfo.dayBadge}
                         </span>
-                      </h4>
-                      <p className="text-[9px] font-bold text-gray-400 uppercase">
-                        {formatDate(log.date)}
+                        <h4 className="text-sm font-black uppercase text-gray-900 tracking-tight">
+                          {log.prefix}{" "}
+                          <span className="text-gray-400 font-bold ml-1">
+                            ({log.plate})
+                          </span>
+                        </h4>
+                      </div>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase mt-0.5">
+                        Horário de Registro: {dateInfo.fullDate}
                       </p>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-[9px] font-black uppercase text-red-600 bg-red-50 border border-red-100 px-3 py-1 rounded-full">
-                      {countItems} {countItems === 1 ? "Item com Novidade" : "Itens com Novidade"}
+                  <div className="flex items-center gap-2 self-start sm:self-center">
+                    <span className="text-[10px] font-black uppercase text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl shadow-xs">
+                      {cnItems.length} {cnItems.length === 1 ? 'Item com Avaria' : 'Itens com Avaria'}
                     </span>
+                    <button
+                      onClick={() => setSelectedLog(log)}
+                      className="no-print bg-gray-100 hover:bg-gray-200 text-gray-700 p-2 rounded-xl text-xs font-bold transition-colors"
+                      title="Visualizar Checklist Completo"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-6 text-[11px]">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-6 text-[11px] bg-gray-50/70 p-3.5 rounded-2xl border border-gray-100">
                   <div>
                     <p className="font-black uppercase text-gray-400 text-[8px] tracking-widest mb-1">
                       Conferente
                     </p>
-                    <p className="font-bold uppercase text-blue-700 bg-blue-50 px-3 py-1.5 rounded-xl inline-block">
+                    <p className="font-bold uppercase text-blue-700 bg-blue-50 px-3 py-1 rounded-xl inline-block">
                       {getInspector(log)}
                     </p>
                   </div>
@@ -3375,118 +3354,144 @@ export const Reports: React.FC<ReportsProps> = ({
                   </div>
                 </div>
 
-                {cnItems.length > 0 ? (
-                  <div className="space-y-2">
-                    <p className="font-black uppercase text-gray-400 text-[8px] tracking-widest flex items-center gap-1.5">
-                      <AlertCircle className="w-3 h-3 text-red-600" />
-                      Detalhamento de Itens com Novidade ("CN")
-                    </p>
-                    <div className="grid grid-cols-1 gap-2">
-                      {cnItems.map((d: any, i: number) => (
-                        <div
-                          key={i}
-                          className="flex flex-col sm:flex-row sm:items-start justify-between bg-red-50/40 hover:bg-red-50/70 p-3 rounded-2xl border border-red-100 gap-2 transition-colors"
-                        >
-                          <div className="space-y-1.5 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[8px] font-black bg-red-600 text-white px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 shadow-xs">
-                                CN
-                              </span>
-                              <span className="font-black text-[10px] uppercase text-red-900">
-                                {d.label}
-                              </span>
-                            </div>
-                            {d.photos && d.photos.length > 0 && (
-                              <div className="flex items-center gap-1.5 pt-1">
-                                {d.photos.map((ph: string, pIdx: number) => (
-                                  <div
-                                    key={pIdx}
-                                    className="w-12 h-12 rounded-xl border border-red-200 overflow-hidden bg-white shadow-xs shrink-0"
-                                  >
-                                    <img
-                                      src={ph}
-                                      alt={`Foto ${d.label}`}
-                                      className="w-full h-full object-cover"
-                                    />
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex-1 sm:text-right">
-                            <span className="text-[10px] text-red-600 font-medium italic bg-white px-3 py-1 rounded-lg border border-red-50 shadow-xs inline-block">
-                              {d.observation && d.observation.trim() !== ""
-                                ? d.observation
-                                : "Sem observação específica"}
+                {/* Itens com Novidades Constatadas no Dia */}
+                <div className="space-y-3 pt-1">
+                  <p className="font-black uppercase text-red-700 text-[10px] tracking-widest flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+                    Itens com Novidades Constatadas no Dia ({cnItems.length})
+                  </p>
+                  <div className="grid grid-cols-1 gap-3">
+                    {cnItems.map((d: any, i: number) => (
+                      <div
+                        key={i}
+                        className="bg-red-50/40 rounded-2xl border border-red-200 p-4 space-y-2.5"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-red-100 pb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 bg-red-600 text-white font-black text-[10px] rounded uppercase shadow-xs">
+                              {d.status || "CN"}
+                            </span>
+                            <span className="font-black text-xs uppercase text-red-950">
+                              {d.label}
                             </span>
                           </div>
+                          <span className="text-[10px] font-bold text-red-600 uppercase tracking-wider">
+                            Com Novidade / Avaria
+                          </span>
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-amber-50/60 p-3 rounded-xl border border-amber-200/60 text-amber-800 text-[10px] font-bold">
-                    Checklist registrado com novidade no status geral ({log.itemsStatus || "CN"}).
-                  </div>
-                )}
 
-                {(() => {
-                  const full = getFullData(log);
-                  if (full && Array.isArray(full.damages) && full.damages.length > 0) {
-                    return (
-                      <div className="space-y-2 pt-1">
-                        <p className="font-black uppercase text-gray-400 text-[8px] tracking-widest flex items-center gap-1.5">
-                          <AlertCircle className="w-3 h-3 text-orange-500" />
-                          Avarias no Veículo (Croqui de Danos)
-                        </p>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {full.damages.map((dmg: any, dIdx: number) => (
-                            <div
-                              key={dIdx}
-                              className="bg-orange-50/40 p-2.5 rounded-xl border border-orange-100 text-[10px] flex items-center gap-2"
-                            >
-                              <div className="w-1.5 h-1.5 rounded-full bg-orange-500 shrink-0" />
-                              <span className="font-bold text-orange-900 uppercase">
-                                {dmg.description || `Ponto de dano #${dIdx + 1}`}
-                              </span>
-                            </div>
-                          ))}
+                        <div className="bg-white p-3 rounded-xl border border-red-100 shadow-xs">
+                          <p className="text-[9px] font-black uppercase text-gray-400 tracking-wider mb-1">
+                            Observação / Descrição da Avaria:
+                          </p>
+                          <p className="text-xs font-semibold text-red-700 italic">
+                            "{d.observation || "Sem observação específica informada pelo conferente."}"
+                          </p>
                         </div>
+
+                        {d.photos && Array.isArray(d.photos) && d.photos.length > 0 && (
+                          <div className="pt-1">
+                            <p className="text-[9px] font-black uppercase text-gray-500 tracking-wider mb-2 flex items-center gap-1">
+                              <Camera className="w-3 h-3 text-red-500" />
+                              Registro Fotográfico ({d.photos.length})
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {d.photos.map((photo: string, pIdx: number) => (
+                                <div
+                                  key={pIdx}
+                                  className="relative w-20 h-20 rounded-xl overflow-hidden border border-red-200 bg-gray-100 shadow-xs cursor-pointer group"
+                                  onClick={() => setPreviewNoveltyPhoto(photo)}
+                                  title="Clique para ampliar"
+                                >
+                                  <img
+                                    src={photo}
+                                    alt={`Foto do item ${d.label}`}
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                  />
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-[9px] font-bold">
+                                    <Eye className="w-4 h-4" />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    );
-                  }
-                  return null;
-                })()}
+                    ))}
+                  </div>
+                </div>
 
                 {log.generalObservation && (
-                  <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-1 h-full bg-orange-400"></div>
-                    <p className="font-black uppercase text-gray-400 text-[8px] tracking-widest mb-2">
-                      Observações Gerais do Conferente
+                  <div className="bg-amber-50/60 p-4 rounded-2xl border border-amber-200 relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-1.5 h-full bg-amber-500"></div>
+                    <p className="font-black uppercase text-amber-800 text-[9px] tracking-widest mb-1.5">
+                      Observações Gerais do Checklist
                     </p>
-                    <p className="text-[11px] font-medium text-gray-700 italic leading-relaxed">
+                    <p className="text-xs font-medium text-gray-700 italic leading-relaxed">
                       "{log.generalObservation}"
                     </p>
                   </div>
                 )}
 
-                <div className="pt-2 flex justify-end">
-                  <p className="text-[8px] font-mono text-gray-300 uppercase">
+                <div className="pt-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-t border-gray-100">
+                  <p className="text-[9px] font-mono text-gray-400 uppercase">
                     Protocolo: {log.id}
                   </p>
+                  <button
+                    onClick={() => setSelectedLog(log)}
+                    className="no-print text-xs font-black uppercase text-blue-600 hover:text-blue-800 flex items-center gap-1.5 transition-colors"
+                  >
+                    <FileText className="w-3.5 h-3.5" /> Ver Checklist Completo
+                  </button>
                 </div>
               </div>
             );
           })}
-          {novelties.length === 0 && (
-            <div className="text-center py-32 bg-gray-50 rounded-[3rem] border-2 border-dashed border-gray-200">
-              <AlertCircle className="w-12 h-12 text-gray-200 mx-auto mb-4" />
-              <p className="text-xs font-black uppercase text-gray-400 tracking-widest">
-                Nenhuma novidade registrada no período e filtros selecionados.
+
+          {sortedNovelties.length === 0 && (
+            <div className="text-center py-24 bg-gray-50 rounded-[3rem] border-2 border-dashed border-gray-200">
+              <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto mb-4 border border-emerald-100 shadow-sm">
+                <CheckCircle className="w-8 h-8" />
+              </div>
+              <h4 className="text-sm font-black uppercase text-gray-700 tracking-wider mb-1">
+                Nenhuma Novidade no Período Selecionado
+              </h4>
+              <p className="text-xs font-bold text-gray-400 uppercase tracking-widest max-w-md mx-auto">
+                Todos os checklists realizados estão em conformidade (Sem Novidades - SN).
               </p>
             </div>
           )}
         </div>
+
+        {/* Modal de Zoom de Foto */}
+        {previewNoveltyPhoto && (
+          <div
+            className="fixed inset-0 z-[300] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 no-print"
+            onClick={() => setPreviewNoveltyPhoto(null)}
+          >
+            <div
+              className="relative max-w-3xl max-h-[90vh] bg-white rounded-3xl overflow-hidden shadow-2xl p-2"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setPreviewNoveltyPhoto(null)}
+                className="absolute top-4 right-4 bg-gray-900/80 hover:bg-gray-900 text-white p-2 rounded-full z-10 transition-colors shadow-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <img
+                src={previewNoveltyPhoto}
+                alt="Evidência fotográfica"
+                className="max-h-[80vh] w-auto mx-auto object-contain rounded-2xl"
+              />
+              <div className="p-3 text-center">
+                <p className="text-xs font-black uppercase text-gray-700">
+                  Registro Fotográfico da Novidade
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -3511,27 +3516,11 @@ export const Reports: React.FC<ReportsProps> = ({
       ok: sourceLogs.filter(
         (l) => !String(l.itemsStatus || "").includes("CN"),
       ).length,
-      operando: sourceLogs.filter(
-        (l) => getLogVehicleStatus(l) === "OPERANDO",
-      ).length,
-      reserva: sourceLogs.filter(
-        (l) => getLogVehicleStatus(l) === "RESERVA",
-      ).length,
-      baixada: sourceLogs.filter(
-        (l) => getLogVehicleStatus(l) === "BAIXADA",
-      ).length,
     };
 
-    const vehiclesMap: Record<
-      string,
-      {
-        total: number;
-        operando: number;
-        reserva: number;
-        baixada: number;
-        latestStatus: "OPERANDO" | "RESERVA" | "BAIXADA";
-      }
-    > = {};
+    const statusCounts = getVehicleStatusCounts(sourceLogs);
+
+    const vehiclesMap: Record<string, number> = {};
     const inspectorsMap: Record<string, number> = {};
     const canonicalPrefixes: Record<string, string> = {};
 
@@ -3540,22 +3529,8 @@ export const Reports: React.FC<ReportsProps> = ({
       if (!canonicalPrefixes[norm]) canonicalPrefixes[norm] = l.prefix;
 
       const inspName = getInspector(l);
+      vehiclesMap[norm] = (vehiclesMap[norm] || 0) + 1;
       inspectorsMap[inspName] = (inspectorsMap[inspName] || 0) + 1;
-
-      const st = getLogVehicleStatus(l);
-      if (!vehiclesMap[norm]) {
-        vehiclesMap[norm] = {
-          total: 0,
-          operando: 0,
-          reserva: 0,
-          baixada: 0,
-          latestStatus: st,
-        };
-      }
-      vehiclesMap[norm].total += 1;
-      if (st === "BAIXADA") vehiclesMap[norm].baixada += 1;
-      else if (st === "RESERVA") vehiclesMap[norm].reserva += 1;
-      else vehiclesMap[norm].operando += 1;
     });
 
     return (
@@ -3566,13 +3541,12 @@ export const Reports: React.FC<ReportsProps> = ({
               Relatório Sintético de Gerenciamento
             </h3>
             <p className="text-xs font-bold text-gray-500 uppercase">
-              Período: {monthFilter || "TODOS"} |{" "}
+              Período: {monthFilter} |{" "}
               {customPrefix
                 ? `Viatura: ${customPrefix}`
                 : selectedPrefixes.size > 0
                   ? `${selectedPrefixes.size} Viaturas Selecionadas`
                   : "Geral"}
-              {vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -3582,7 +3556,7 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        {/* Indicadores Principais de Inspeção */}
+        {/* Resumo Geral de Inspeções */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-blue-50 p-4 rounded-3xl border border-blue-100">
             <p className="text-[9px] font-black text-blue-500 uppercase">
@@ -3614,123 +3588,38 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        {/* Indicadores de Status Operacional: Operando, Reserva e Baixada */}
+        {/* Situação Operacional das Viaturas (Operando / Reserva / Baixada) */}
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-black uppercase text-gray-400 tracking-wider">
-              Status Operacional da Frota (Registros do Período)
-            </span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-emerald-50 p-4 rounded-3xl border border-emerald-100 flex items-center justify-between">
-              <div>
-                <p className="text-[9px] font-black text-emerald-600 uppercase flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
-                  Operando
-                </p>
-                <p className="text-2xl font-black text-emerald-950 mt-1">
-                  {stats.operando}
-                </p>
-              </div>
-              <div className="text-right">
-                <span className="text-[11px] font-black text-emerald-700 bg-emerald-100/80 px-2.5 py-1 rounded-xl">
-                  {stats.total ? ((stats.operando / stats.total) * 100).toFixed(0) : 0}%
-                </span>
-                <p className="text-[8px] font-bold text-emerald-600 uppercase mt-1">
-                  dos checklists
-                </p>
-              </div>
-            </div>
-
-            <div className="bg-amber-50 p-4 rounded-3xl border border-amber-100 flex items-center justify-between">
-              <div>
-                <p className="text-[9px] font-black text-amber-600 uppercase flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                  Reserva
-                </p>
-                <p className="text-2xl font-black text-amber-950 mt-1">
-                  {stats.reserva}
-                </p>
-              </div>
-              <div className="text-right">
-                <span className="text-[11px] font-black text-amber-700 bg-amber-100/80 px-2.5 py-1 rounded-xl">
-                  {stats.total ? ((stats.reserva / stats.total) * 100).toFixed(0) : 0}%
-                </span>
-                <p className="text-[8px] font-bold text-amber-600 uppercase mt-1">
-                  dos checklists
-                </p>
-              </div>
-            </div>
-
-            <div className="bg-red-50 p-4 rounded-3xl border border-red-100 flex items-center justify-between">
-              <div>
-                <p className="text-[9px] font-black text-red-600 uppercase flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-red-600"></span>
-                  Baixada
-                </p>
-                <p className="text-2xl font-black text-red-950 mt-1">
-                  {stats.baixada}
-                </p>
-              </div>
-              <div className="text-right">
-                <span className="text-[11px] font-black text-red-700 bg-red-100/80 px-2.5 py-1 rounded-xl">
-                  {stats.total ? ((stats.baixada / stats.total) * 100).toFixed(0) : 0}%
-                </span>
-                <p className="text-[8px] font-bold text-red-600 uppercase mt-1">
-                  dos checklists
-                </p>
-              </div>
-            </div>
-          </div>
+          <p className="text-[10px] font-black uppercase text-gray-500 tracking-wider">
+            Situação das Viaturas nas Inspeções (Operando / Reserva / Baixada)
+          </p>
+          {renderVehicleStatusCards(statusCounts)}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="border rounded-2xl overflow-hidden shadow-xs">
-            <div className="bg-gray-100 p-3 text-[10px] font-black uppercase flex items-center justify-between">
-              <span>Uso da Frota & Status (Top 10)</span>
-              <span className="text-[8px] text-gray-500 font-bold">Op / Res / Bx</span>
+          <div className="border rounded-2xl overflow-hidden">
+            <div className="bg-gray-100 p-3 text-[10px] font-black uppercase">
+              Uso da Frota (Top 10)
             </div>
             <table className="w-full text-[10px] text-left">
-              <thead className="bg-gray-50 border-b text-[8px] font-black uppercase text-gray-400">
-                <tr>
-                  <th className="p-2">Viatura</th>
-                  <th className="p-2 text-center">Status</th>
-                  <th className="p-2 text-center text-emerald-600">Op.</th>
-                  <th className="p-2 text-center text-amber-600">Res.</th>
-                  <th className="p-2 text-center text-red-600">Bx.</th>
-                  <th className="p-2 text-right">Total</th>
-                </tr>
-              </thead>
               <tbody className="divide-y">
                 {Object.entries(vehiclesMap)
-                  .sort((a, b) => b[1].total - a[1].total)
+                  .sort((a, b) => b[1] - a[1])
                   .slice(0, 10)
-                  .map(([norm, vData]) => (
-                    <tr key={norm} className="hover:bg-gray-50/50">
+                  .map(([norm, count]) => (
+                    <tr key={norm}>
                       <td className="p-2 font-bold uppercase">
                         {canonicalPrefixes[norm]}
                       </td>
-                      <td className="p-2 text-center whitespace-nowrap">
-                        {renderVehicleStatusBadge(vData.latestStatus, "sm")}
-                      </td>
-                      <td className="p-2 text-center font-bold text-emerald-700">
-                        {vData.operando}
-                      </td>
-                      <td className="p-2 text-center font-bold text-amber-700">
-                        {vData.reserva}
-                      </td>
-                      <td className="p-2 text-center font-bold text-red-700">
-                        {vData.baixada}
-                      </td>
                       <td className="p-2 text-right font-black text-blue-600">
-                        {vData.total}
+                        {count}
                       </td>
                     </tr>
                   ))}
               </tbody>
             </table>
           </div>
-          <div className="border rounded-2xl overflow-hidden shadow-xs">
+          <div className="border rounded-2xl overflow-hidden">
             <div className="bg-gray-100 p-3 text-[10px] font-black uppercase">
               Atividade por Conferente (Top 10)
             </div>
@@ -3740,7 +3629,7 @@ export const Reports: React.FC<ReportsProps> = ({
                   .sort((a, b) => b[1] - a[1])
                   .slice(0, 10)
                   .map(([name, count]) => (
-                    <tr key={name} className="hover:bg-gray-50/50">
+                    <tr key={name}>
                       <td className="p-2 font-bold uppercase">{name}</td>
                       <td className="p-2 text-right font-black text-green-600">
                         {count}
@@ -3765,11 +3654,7 @@ export const Reports: React.FC<ReportsProps> = ({
         })
       : filteredLogs;
 
-    const opCount = listToRender.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
-    const resCount = listToRender.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
-    const bxCount = listToRender.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
-    const snCount = listToRender.filter((l) => !String(l.itemsStatus || "").includes("CN")).length;
-    const cnCount = listToRender.filter((l) => String(l.itemsStatus || "").includes("CN")).length;
+    const statusCounts = getVehicleStatusCounts(listToRender);
 
     return (
       <div className="space-y-6">
@@ -3785,7 +3670,7 @@ export const Reports: React.FC<ReportsProps> = ({
                 : selectedPrefixes.size > 0
                   ? `${selectedPrefixes.size} Viaturas Selecionadas`
                   : "Geral"}{" "}
-              | {monthFilter || "TODOS"}{vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
+              | {monthFilter}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -3795,59 +3680,39 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        {/* Resumo de Status Operacional e Conformidade */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-          <div className="bg-gray-50 p-3 rounded-2xl border border-gray-200">
-            <p className="text-[9px] font-black uppercase text-gray-500">Total Registros</p>
-            <p className="text-xl font-black text-gray-900">{listToRender.length}</p>
-          </div>
-          <div className="bg-emerald-50 p-3 rounded-2xl border border-emerald-200">
-            <p className="text-[9px] font-black uppercase text-emerald-600">Operando</p>
-            <p className="text-xl font-black text-emerald-900">{opCount}</p>
-          </div>
-          <div className="bg-amber-50 p-3 rounded-2xl border border-amber-200">
-            <p className="text-[9px] font-black uppercase text-amber-600">Reserva</p>
-            <p className="text-xl font-black text-amber-900">{resCount}</p>
-          </div>
-          <div className="bg-red-50 p-3 rounded-2xl border border-red-200">
-            <p className="text-[9px] font-black uppercase text-red-600">Baixada</p>
-            <p className="text-xl font-black text-red-900">{bxCount}</p>
-          </div>
-          <div className="bg-green-50 p-3 rounded-2xl border border-green-200">
-            <p className="text-[9px] font-black uppercase text-green-600">SN (Conforme)</p>
-            <p className="text-xl font-black text-green-900">{snCount}</p>
-          </div>
-          <div className="bg-rose-50 p-3 rounded-2xl border border-rose-200">
-            <p className="text-[9px] font-black uppercase text-rose-600">CN (Avarias)</p>
-            <p className="text-xl font-black text-rose-900">{cnCount}</p>
-          </div>
+        {/* Resumo de Situação Operacional das Viaturas */}
+        <div className="space-y-2">
+          <p className="text-[10px] font-black uppercase text-gray-500 tracking-wider">
+            Situação Operacional das Viaturas (Operando / Reserva / Baixada)
+          </p>
+          {renderVehicleStatusCards(statusCounts)}
         </div>
 
-        <div className="overflow-x-auto border rounded-2xl shadow-xs">
+        <div className="overflow-x-auto border rounded-2xl">
           <table className="w-full text-[9px] text-left border-collapse">
             <thead className="bg-gray-100 font-black uppercase text-gray-400 border-b sticky top-0">
               <tr>
                 <th className="p-2">Data/Hora</th>
                 <th className="p-2">Viatura</th>
-                <th className="p-2">Status VTR</th>
+                <th className="p-2">Situação</th>
                 <th className="p-2">KM</th>
                 <th className="p-2">Tipo</th>
                 <th className="p-2">Conferente</th>
-                <th className="p-2">Conformidade</th>
+                <th className="p-2">Status Itens</th>
                 <th className="p-2">Obs.</th>
               </tr>
             </thead>
             <tbody className="divide-y bg-white">
-              {listToRender.map((log) => (
-                <tr key={log.id} className="hover:bg-gray-50/50">
+              {listToRender.map((log, lIdx) => (
+                <tr key={`${log.id}-${lIdx}`} className="hover:bg-gray-50">
                   <td className="p-2 whitespace-nowrap">
                     {new Date(log.date).toLocaleString("pt-BR")}
                   </td>
                   <td className="p-2 font-bold uppercase">{log.prefix}</td>
                   <td className="p-2 whitespace-nowrap">
-                    {renderVehicleStatusBadge(getLogVehicleStatus(log))}
+                    {getVehicleStatusBadge(getNormalizedVehicleStatus(log))}
                   </td>
-                  <td className="p-2 font-mono">{log.km}</td>
+                  <td className="p-2">{log.km}</td>
                   <td className="p-2 uppercase">{log.checklistType}</td>
                   <td className="p-2 uppercase font-medium break-words min-w-[150px]">
                     {getInspector(log)}
@@ -3873,12 +3738,12 @@ export const Reports: React.FC<ReportsProps> = ({
     const columns = [
       { id: "date", label: "Data/Hora" },
       { id: "prefix", label: "Viatura" },
-      { id: "vehicleStatus", label: "Status VTR (Op/Res/Bx)" },
       { id: "plate", label: "Placa" },
+      { id: "vehicleStatus", label: "Situação" },
       { id: "km", label: "KM" },
       { id: "type", label: "Tipo" },
       { id: "inspector", label: "Conferente" },
-      { id: "status", label: "Conformidade" },
+      { id: "status", label: "Status Itens" },
       { id: "obs", label: "Observações" },
       { id: "id", label: "Protocolo" },
       { id: "details", label: "Detalhes Itens" },
@@ -3896,9 +3761,7 @@ export const Reports: React.FC<ReportsProps> = ({
       return true;
     });
 
-    const fullOpCount = filteredByStatus.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
-    const fullResCount = filteredByStatus.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
-    const fullBxCount = filteredByStatus.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
+    const statusCounts = getVehicleStatusCounts(filteredByStatus);
 
     return (
       <div className="space-y-6">
@@ -3912,7 +3775,7 @@ export const Reports: React.FC<ReportsProps> = ({
               {selectedPrefixes.size > 0
                 ? `${selectedPrefixes.size} Viaturas Selecionadas`
                 : "Geral"}{" "}
-              | {monthFilter || "TODOS"}{vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""} | Status: {statusFilter.toUpperCase()}
+              | {monthFilter} | Status: {statusFilter.toUpperCase()}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -3920,6 +3783,14 @@ export const Reports: React.FC<ReportsProps> = ({
               Página <span className="page-number"></span>
             </p>
           </div>
+        </div>
+
+        {/* Resumo de Situação Operacional das Viaturas */}
+        <div className="space-y-2">
+          <p className="text-[10px] font-black uppercase text-gray-500 tracking-wider">
+            Situação Operacional das Viaturas (Operando / Reserva / Baixada)
+          </p>
+          {renderVehicleStatusCards(statusCounts)}
         </div>
 
         <div className="no-print space-y-4">
@@ -3944,67 +3815,42 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-4 bg-gray-50 p-3 rounded-2xl border">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-black uppercase text-gray-400 mr-1">
-                Registros:
-              </span>
-              <span className="bg-white border text-gray-700 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase shadow-xs">
-                Total: {filteredByStatus.length}
-              </span>
-              <span className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase flex items-center gap-1 shadow-xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
-                Operando: {fullOpCount}
-              </span>
-              <span className="bg-amber-50 border border-amber-200 text-amber-800 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase flex items-center gap-1 shadow-xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                Reserva: {fullResCount}
-              </span>
-              <span className="bg-red-50 border border-red-200 text-red-800 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase flex items-center gap-1 shadow-xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-red-600"></span>
-                Baixada: {fullBxCount}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <p className="text-[10px] font-black uppercase text-gray-400">
-                Filtrar Status:
-              </p>
-              <div className="flex bg-gray-100 p-1 rounded-xl border">
-                {(["all", "ok", "cn"] as const).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setStatusFilter(s)}
-                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
-                      statusFilter === s
-                        ? "bg-white text-blue-600 shadow-sm"
-                        : "text-gray-400 hover:text-gray-600"
-                    }`}
-                  >
-                    {s === "all" ? "Todos" : s.toUpperCase()}
-                  </button>
-                ))}
-              </div>
+          <div className="flex items-center gap-4">
+            <p className="text-[10px] font-black uppercase text-gray-400">
+              Filtrar Status:
+            </p>
+            <div className="flex bg-gray-100 p-1 rounded-xl border">
+              {(["all", "ok", "cn"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(s)}
+                  className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
+                    statusFilter === s
+                       ? "bg-white text-blue-600 shadow-sm"
+                      : "text-gray-400 hover:text-gray-600"
+                  }`}
+                >
+                  {s === "all" ? "Todos" : s.toUpperCase()}
+                </button>
+              ))}
             </div>
           </div>
         </div>
 
-        <div className="overflow-x-auto border rounded-2xl shadow-xs">
+        <div className="overflow-x-auto border rounded-2xl">
           <table className="w-full text-[9px] text-left border-collapse">
             <thead className="bg-gray-100 font-black uppercase text-gray-400 border-b sticky top-0">
               <tr>
                 {visibleColumns.date && <th className="p-2">Data/Hora</th>}
                 {visibleColumns.prefix && <th className="p-2">Viatura</th>}
-                {visibleColumns.vehicleStatus && (
-                  <th className="p-2">Status VTR</th>
-                )}
                 {visibleColumns.plate && <th className="p-2">Placa</th>}
+                {visibleColumns.vehicleStatus && <th className="p-2">Situação</th>}
                 {visibleColumns.km && <th className="p-2">KM</th>}
                 {visibleColumns.type && <th className="p-2">Tipo</th>}
                 {visibleColumns.inspector && (
                   <th className="p-2">Conferente</th>
                 )}
-                {visibleColumns.status && <th className="p-2">Conformidade</th>}
+                {visibleColumns.status && <th className="p-2">Status Itens</th>}
                 {visibleColumns.obs && <th className="p-2">Obs.</th>}
                 {visibleColumns.id && <th className="p-2">Protocolo</th>}
                 {visibleColumns.details && <th className="p-2">Detalhes</th>}
@@ -4012,8 +3858,8 @@ export const Reports: React.FC<ReportsProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y bg-white">
-              {filteredByStatus.map((log) => (
-                <tr key={log.id} className="hover:bg-gray-50/50">
+              {filteredByStatus.map((log, lIdx) => (
+                <tr key={`${log.id}-${lIdx}`} className="hover:bg-gray-50">
                   {visibleColumns.date && (
                     <td className="p-2 whitespace-nowrap">
                       {new Date(log.date).toLocaleString("pt-BR")}
@@ -4022,15 +3868,15 @@ export const Reports: React.FC<ReportsProps> = ({
                   {visibleColumns.prefix && (
                     <td className="p-2 font-bold uppercase">{log.prefix}</td>
                   )}
-                  {visibleColumns.vehicleStatus && (
-                    <td className="p-2 whitespace-nowrap">
-                      {renderVehicleStatusBadge(getLogVehicleStatus(log))}
-                    </td>
-                  )}
                   {visibleColumns.plate && (
                     <td className="p-2 font-mono uppercase">{log.plate}</td>
                   )}
-                  {visibleColumns.km && <td className="p-2 font-mono">{log.km}</td>}
+                  {visibleColumns.vehicleStatus && (
+                    <td className="p-2 whitespace-nowrap">
+                      {getVehicleStatusBadge(getNormalizedVehicleStatus(log))}
+                    </td>
+                  )}
+                  {visibleColumns.km && <td className="p-2">{log.km}</td>}
                   {visibleColumns.type && (
                     <td className="p-2 uppercase">{log.checklistType}</td>
                   )}
@@ -4105,9 +3951,7 @@ export const Reports: React.FC<ReportsProps> = ({
       a[0].localeCompare(b[0]),
     );
 
-    const totalOpLogs = filteredLogs.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
-    const totalResLogs = filteredLogs.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
-    const totalBxLogs = filteredLogs.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
+    const totalStatusCounts = getVehicleStatusCounts(filteredLogs);
 
     return (
       <div className="space-y-8">
@@ -4117,11 +3961,10 @@ export const Reports: React.FC<ReportsProps> = ({
               Relatório Mensal Agrupado por Viatura
             </h3>
             <p className="text-xs font-bold text-gray-500 uppercase">
-              Mês: {monthFilter || "TODOS"} |{" "}
+              Mês: {monthFilter} |{" "}
               {selectedPrefixes.size > 0
                 ? `${selectedPrefixes.size} Viaturas Selecionadas`
                 : "Todas as Viaturas"}
-              {vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
             </p>
           </div>
           <div className="text-right hidden print:block">
@@ -4131,24 +3974,12 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        {/* Resumo Geral de Status da Frota no Mês */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3">
-            <p className="text-[9px] font-black uppercase text-blue-600">Viaturas Agrupadas</p>
-            <p className="text-xl font-black text-blue-900">{sortedGroups.length}</p>
-          </div>
-          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3">
-            <p className="text-[9px] font-black uppercase text-emerald-600">Total Operando</p>
-            <p className="text-xl font-black text-emerald-900">{totalOpLogs} dias/logs</p>
-          </div>
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3">
-            <p className="text-[9px] font-black uppercase text-amber-600">Total Reserva</p>
-            <p className="text-xl font-black text-amber-900">{totalResLogs} dias/logs</p>
-          </div>
-          <div className="bg-red-50 border border-red-200 rounded-2xl p-3">
-            <p className="text-[9px] font-black uppercase text-red-600">Total Baixada</p>
-            <p className="text-xl font-black text-red-900">{totalBxLogs} dias/logs</p>
-          </div>
+        {/* Resumo de Situação Operacional das Viaturas */}
+        <div className="space-y-2">
+          <p className="text-[10px] font-black uppercase text-gray-500 tracking-wider">
+            Situação Operacional Geral das Viaturas (Operando / Reserva / Baixada)
+          </p>
+          {renderVehicleStatusCards(totalStatusCounts)}
         </div>
 
         {sortedGroups.length === 0 ? (
@@ -4158,34 +3989,29 @@ export const Reports: React.FC<ReportsProps> = ({
         ) : (
           <div className="space-y-10">
             {sortedGroups.map(([norm, group]) => {
-              const groupOp = group.logs.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
-              const groupRes = group.logs.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
-              const groupBx = group.logs.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
-              const latestLog = group.logs[group.logs.length - 1];
-              const latestStatus = getLogVehicleStatus(latestLog);
+              const groupStatus = getVehicleStatusCounts(group.logs);
 
               return (
                 <div key={norm} className="space-y-4 print:break-inside-avoid">
-                  <div className="bg-gray-900 text-white px-6 py-3.5 rounded-2xl flex flex-wrap justify-between items-center gap-3 shadow-lg">
+                  <div className="bg-gray-900 text-white px-6 py-3 rounded-2xl flex flex-wrap justify-between items-center shadow-lg gap-2">
+                    <h4 className="font-black uppercase tracking-widest text-sm">
+                      Viatura: {group.canonicalPrefix}
+                    </h4>
                     <div className="flex items-center gap-3 flex-wrap">
-                      <h4 className="font-black uppercase tracking-widest text-sm">
-                        Viatura: {group.canonicalPrefix}
-                      </h4>
-                      {renderVehicleStatusBadge(latestStatus, "md")}
-                    </div>
-                    <div className="flex items-center gap-2 flex-wrap text-[10px] font-bold uppercase">
-                      <span className="bg-emerald-800/60 border border-emerald-500/40 text-emerald-200 px-2.5 py-1 rounded-lg">
-                        Operando: {groupOp}d
-                      </span>
-                      <span className="bg-amber-800/60 border border-amber-500/40 text-amber-200 px-2.5 py-1 rounded-lg">
-                        Reserva: {groupRes}d
-                      </span>
-                      <span className="bg-red-800/60 border border-red-500/40 text-red-200 px-2.5 py-1 rounded-lg">
-                        Baixada: {groupBx}d
-                      </span>
-                      <span className="opacity-75 bg-gray-800 px-2.5 py-1 rounded-lg">
+                      <span className="text-[10px] font-bold opacity-70 uppercase">
                         {group.logs.length} Inspeções
                       </span>
+                      <div className="flex items-center gap-1.5 text-[9px] font-black uppercase">
+                        <span className="bg-emerald-800 text-white px-2 py-0.5 rounded-md shadow-2xs">
+                          OP: {groupStatus.operando}
+                        </span>
+                        <span className="bg-amber-800 text-white px-2 py-0.5 rounded-md shadow-2xs">
+                          RS: {groupStatus.reserva}
+                        </span>
+                        <span className="bg-red-800 text-white px-2 py-0.5 rounded-md shadow-2xs">
+                          BX: {groupStatus.baixada}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -4194,28 +4020,28 @@ export const Reports: React.FC<ReportsProps> = ({
                       <thead className="bg-gray-50 font-black uppercase text-gray-400 border-b">
                         <tr>
                           <th className="p-3">Data</th>
-                          <th className="p-3">Status VTR</th>
                           <th className="p-3">KM</th>
                           <th className="p-3">Tipo</th>
+                          <th className="p-3">Situação</th>
                           <th className="p-3">Conferente</th>
-                          <th className="p-3">Conformidade</th>
+                          <th className="p-3">Status Itens</th>
                           <th className="p-3">Observações</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y bg-white">
-                        {group.logs.map((log) => (
+                        {group.logs.map((log, lIdx) => (
                           <tr
-                            key={log.id}
+                            key={`${log.id}-${lIdx}`}
                             className="hover:bg-gray-50 transition-colors"
                           >
-                            <td className="p-3 font-bold whitespace-nowrap">
+                            <td className="p-3 font-bold">
                               {new Date(log.date).toLocaleDateString("pt-BR")}
-                            </td>
-                            <td className="p-3 whitespace-nowrap">
-                              {renderVehicleStatusBadge(getLogVehicleStatus(log))}
                             </td>
                             <td className="p-3 font-mono">{log.km}</td>
                             <td className="p-3 uppercase">{log.checklistType}</td>
+                            <td className="p-3 whitespace-nowrap">
+                              {getVehicleStatusBadge(getNormalizedVehicleStatus(log))}
+                            </td>
                             <td className="p-3 uppercase font-medium">
                               {getInspector(log)}
                             </td>
@@ -4244,22 +4070,7 @@ export const Reports: React.FC<ReportsProps> = ({
   };
 
   const renderHistoryReport = () => {
-    const historyLogs = filteredLogs.filter(
-      (l) =>
-        !prefixSearch ||
-        String(l.prefix)
-          .toLowerCase()
-          .includes(prefixSearch.toLowerCase()) ||
-        String(l.plate)
-          .toLowerCase()
-          .includes(prefixSearch.toLowerCase()),
-    );
-
-    const histOpCount = historyLogs.filter((l) => getLogVehicleStatus(l) === "OPERANDO").length;
-    const histResCount = historyLogs.filter((l) => getLogVehicleStatus(l) === "RESERVA").length;
-    const histBxCount = historyLogs.filter((l) => getLogVehicleStatus(l) === "BAIXADA").length;
-    const histSnCount = historyLogs.filter((l) => !String(l.itemsStatus || "").includes("CN")).length;
-    const histCnCount = historyLogs.filter((l) => String(l.itemsStatus || "").includes("CN")).length;
+    const statusCounts = getVehicleStatusCounts(filteredLogs);
 
     return (
       <div className="space-y-6">
@@ -4273,8 +4084,7 @@ export const Reports: React.FC<ReportsProps> = ({
               {selectedPrefixes.size > 0
                 ? `${selectedPrefixes.size} Viaturas Selecionadas`
                 : "Geral"}{" "}
-              | {monthFilter || "TODOS"}
-              {vehicleStatusFilter ? ` | Status VTR: ${vehicleStatusFilter}` : ""}
+              | {monthFilter}
             </p>
           </div>
           <div className="flex items-center gap-2 no-print">
@@ -4292,32 +4102,12 @@ export const Reports: React.FC<ReportsProps> = ({
           </div>
         </div>
 
-        {/* Resumo de Status Operacional e Auditoria */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-          <div className="bg-gray-50 p-3 rounded-2xl border border-gray-200">
-            <p className="text-[9px] font-black uppercase text-gray-500">Total Histórico</p>
-            <p className="text-xl font-black text-gray-900">{historyLogs.length}</p>
-          </div>
-          <div className="bg-emerald-50 p-3 rounded-2xl border border-emerald-200">
-            <p className="text-[9px] font-black uppercase text-emerald-600">Operando</p>
-            <p className="text-xl font-black text-emerald-900">{histOpCount}</p>
-          </div>
-          <div className="bg-amber-50 p-3 rounded-2xl border border-amber-200">
-            <p className="text-[9px] font-black uppercase text-amber-600">Reserva</p>
-            <p className="text-xl font-black text-amber-900">{histResCount}</p>
-          </div>
-          <div className="bg-red-50 p-3 rounded-2xl border border-red-200">
-            <p className="text-[9px] font-black uppercase text-red-600">Baixada</p>
-            <p className="text-xl font-black text-red-900">{histBxCount}</p>
-          </div>
-          <div className="bg-green-50 p-3 rounded-2xl border border-green-200">
-            <p className="text-[9px] font-black uppercase text-green-600">SN (OK)</p>
-            <p className="text-xl font-black text-green-900">{histSnCount}</p>
-          </div>
-          <div className="bg-rose-50 p-3 rounded-2xl border border-rose-200">
-            <p className="text-[9px] font-black uppercase text-rose-600">CN (Avarias)</p>
-            <p className="text-xl font-black text-rose-900">{histCnCount}</p>
-          </div>
+        {/* Resumo de Situação Operacional das Viaturas */}
+        <div className="space-y-2">
+          <p className="text-[10px] font-black uppercase text-gray-500 tracking-wider">
+            Situação Operacional das Viaturas no Histórico (Operando / Reserva / Baixada)
+          </p>
+          {renderVehicleStatusCards(statusCounts)}
         </div>
 
         <div className="flex-1 flex flex-col min-h-0 bg-gray-50 rounded-2xl border overflow-hidden print:bg-white print:border-0 print:overflow-visible">
@@ -4337,66 +4127,77 @@ export const Reports: React.FC<ReportsProps> = ({
                 <tr>
                   <th className="p-3">Data/Hora</th>
                   <th className="p-3">Viatura</th>
-                  <th className="p-3">Status VTR</th>
+                  <th className="p-3">Situação</th>
                   <th className="p-3">Inspetor</th>
-                  <th className="p-3">Conformidade</th>
+                  <th className="p-3">Status Itens</th>
                   <th className="p-3 text-right">Relatório</th>
                 </tr>
               </thead>
               <tbody className="divide-y bg-white">
-                {historyLogs.map((log, idx) => (
-                  <tr
-                    key={`${log.id}-${idx}`}
-                    className="hover:bg-blue-50/50 transition-colors print:break-inside-avoid"
-                  >
-                    <td className="p-3 font-mono text-gray-500 whitespace-nowrap">
-                      {new Date(log.date).toLocaleString("pt-BR")}
-                    </td>
-                    <td className="p-3 font-black text-gray-800 uppercase">
-                      {log.prefix}
-                      <span className="text-[8px] font-normal opacity-50 block font-mono">
-                        {log.plate}
-                      </span>
-                    </td>
-                    <td className="p-3 whitespace-nowrap">
-                      {renderVehicleStatusBadge(getLogVehicleStatus(log))}
-                    </td>
-                    <td className="p-3 uppercase font-bold text-gray-600 break-words">
-                      {getInspector(log)}
-                    </td>
-                    <td className="p-3">
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase ${String(log.itemsStatus).includes("CN") ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"}`}
-                      >
-                        {log.itemsStatus || "SN"}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right">
-                      <div className="flex justify-end gap-2">
-                        <button
-                          onClick={() =>
-                            setViewingJsonData({
-                              data: getFullData(log),
-                              title: "Dados Originais (JSON)",
-                              subtitle: `Protocolo: ${log.id} | Viatura: ${log.prefix}`,
-                            })
-                          }
-                          className="p-2 bg-gray-100 hover:bg-blue-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
-                          title="Visualizar Dados Originais (JSON)"
+                {filteredLogs
+                  .filter(
+                    (l) =>
+                      !prefixSearch ||
+                      String(l.prefix)
+                        .toLowerCase()
+                        .includes(prefixSearch.toLowerCase()) ||
+                      String(l.plate)
+                        .toLowerCase()
+                        .includes(prefixSearch.toLowerCase()),
+                  )
+                  .map((log, idx) => (
+                    <tr
+                      key={`${log.id}-${idx}`}
+                      className="hover:bg-blue-50/50 transition-colors print:break-inside-avoid"
+                    >
+                      <td className="p-3 font-mono text-gray-500">
+                        {new Date(log.date).toLocaleString("pt-BR")}
+                      </td>
+                      <td className="p-3 font-black text-gray-800 uppercase">
+                        {log.prefix}
+                        <span className="text-[8px] font-normal opacity-50 block">
+                          {log.plate}
+                        </span>
+                      </td>
+                      <td className="p-3 whitespace-nowrap">
+                        {getVehicleStatusBadge(getNormalizedVehicleStatus(log))}
+                      </td>
+                      <td className="p-3 uppercase font-bold text-gray-600 break-words">
+                        {getInspector(log)}
+                      </td>
+                      <td className="p-3">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase ${String(log.itemsStatus).includes("CN") ? "bg-red-100 text-red-600" : "bg-green-100 text-green-600"}`}
                         >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => setSelectedLog(log)}
-                          className="p-2 bg-gray-100 hover:bg-green-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
-                          title="Visualizar Relatório Formatado"
-                        >
-                          <FileText className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          {log.itemsStatus}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            onClick={() =>
+                              setViewingJsonData({
+                                data: getFullData(log),
+                                title: "Dados Originais (JSON)",
+                                subtitle: `Protocolo: ${log.id} | Viatura: ${log.prefix}`,
+                              })
+                            }
+                            className="p-2 bg-gray-100 hover:bg-blue-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
+                            title="Visualizar Dados Originais (JSON)"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setSelectedLog(log)}
+                            className="p-2 bg-gray-100 hover:bg-green-600 hover:text-white rounded-lg transition-all shadow-sm no-print"
+                            title="Visualizar Relatório Formatado"
+                          >
+                            <FileText className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>
@@ -4744,6 +4545,397 @@ export const Reports: React.FC<ReportsProps> = ({
       </div>
     );
   }
+
+  const renderKmMonthlyReport = () => {
+    const isYearly = !monthFilter;
+    const currentYear = monthFilter ? parseInt(monthFilter.split("-")[0]) : new Date().getFullYear();
+
+    // Filtra logs baseados no ano selecionado
+    const logsThisYear = logs.filter(l => {
+      const comps = parseDateToComponents(l.date);
+      return comps && comps.year === currentYear;
+    });
+
+    const prefixesToProcess = selectedPrefixes.size > 0 
+      ? Array.from(selectedPrefixes) 
+      : visiblePrefixes;
+
+    const kmData = prefixesToProcess.map(prefix => {
+      const vLogs = logsThisYear.filter(l => normalizePrefix(l.prefix) === normalizePrefix(prefix));
+      const vehicle = settings.vehicles?.find(veh => normalizePrefix(veh.prefix) === normalizePrefix(prefix));
+      
+      const monthlyStats = Array.from({ length: 12 }, (_, i) => {
+        const monthNum = i + 1;
+        const monthLogs = vLogs.filter(l => parseDateToComponents(l.date)?.month === monthNum);
+        
+        if (monthLogs.length === 0) return { month: monthNum, km: 0, count: 0, lastKm: 0 };
+        
+        const kms = monthLogs.map(l => parseInt(l.km)).filter(k => !isNaN(k));
+        const maxKm = Math.max(...kms);
+        
+        const logsBefore = logs.filter(l => {
+          if (normalizePrefix(l.prefix) !== normalizePrefix(prefix)) return false;
+          const comps = parseDateToComponents(l.date);
+          if (!comps) return false;
+          return comps.year < currentYear || (comps.year === currentYear && comps.month < monthNum);
+        });
+
+        let startKm = 0;
+        if (logsBefore.length > 0) {
+          const kmsBefore = logsBefore.map(l => parseInt(l.km)).filter(k => !isNaN(k));
+          startKm = Math.max(...kmsBefore);
+        } else {
+          startKm = Math.min(...kms);
+        }
+
+        return {
+          month: monthNum,
+          km: maxKm - startKm,
+          count: monthLogs.length,
+          lastKm: maxKm
+        };
+      });
+
+      const totalYearKm = monthlyStats.reduce((acc, m) => acc + m.km, 0);
+      
+      return {
+        prefix,
+        station: vehicle?.station || "SEM POSTO",
+        sgb: vehicle?.sgb || "SEM SGB",
+        monthlyStats,
+        totalYearKm,
+        avgMonthlyKm: totalYearKm / monthlyStats.filter(m => m.count > 0).length || 0
+      };
+    }).sort((a, b) => b.totalYearKm - a.totalYearKm);
+
+    const totalFleetKm = kmData.reduce((acc, v) => acc + v.totalYearKm, 0);
+
+    // Grouping by Station
+    const groupedKmData = kmData.reduce((acc, v) => {
+      if (!acc[v.station]) acc[v.station] = [];
+      acc[v.station].push(v);
+      return acc;
+    }, {} as Record<string, typeof kmData>);
+
+    const statsByStation = Object.entries(groupedKmData).map(([name, data]) => ({
+      name,
+      totalKm: data.reduce((sum, v) => sum + v.totalYearKm, 0),
+      count: data.length
+    })).sort((a, b) => b.totalKm - a.totalKm);
+
+    const statsBySgb = kmData.reduce((acc, v) => {
+      acc[v.sgb] = (acc[v.sgb] || 0) + v.totalYearKm;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const statsByType = kmData.reduce((acc, v) => {
+      const pref = v.prefix.toUpperCase();
+      let type = "OUTROS";
+      if (pref.startsWith("UR")) type = "UR (RESGATE)";
+      else if (pref.startsWith("ABS")) type = "ABS (BOMBA)";
+      else if (pref.startsWith("ASE")) type = "ASE (SALVAMENTO)";
+      else if (pref.startsWith("AT")) type = "AT (TANQUE)";
+      else if (pref.startsWith("MOTO") || pref.startsWith("ROC")) type = "MOTOCICLETA";
+      
+      acc[type] = (acc[type] || 0) + v.totalYearKm;
+      return acc;
+    }, {} as Record<string, number>);
+
+    return (
+      <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700 max-w-7xl mx-auto p-4 sm:p-8" ref={reportRef}>
+        <Header 
+          title="Relatório de Quilometragem Rodada"
+          date={monthFilter ? getMonthLabel(monthFilter) : `ANO TODO (${currentYear})`}
+          onDateChange={() => {}}
+          logoUrl1={settings.headerLogoUrl1}
+          logoUrl2={settings.headerLogoUrl2}
+          bgColor={settings.headerBgColor}
+        />
+
+        <div className="flex flex-col md:flex-row gap-6 no-print">
+          <div className="flex-1 bg-white border rounded-[2rem] p-6 shadow-sm">
+             <div className="flex items-center gap-3 mb-6">
+                <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
+                  <TrendingUp className="w-5 h-5" />
+                </div>
+                <div>
+                   <h3 className="text-sm font-black uppercase text-gray-900 leading-none">Filtros Avançados</h3>
+                   <p className="text-[10px] text-gray-400 font-bold uppercase mt-1">Refine a busca por unidade ou período</p>
+                </div>
+             </div>
+             
+             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-400 uppercase ml-1">Referência</label>
+                  <select 
+                    value={monthFilter}
+                    onChange={(e) => handleMonthChange(e.target.value)}
+                    className="w-full bg-gray-50 border rounded-xl p-3 text-xs font-black uppercase outline-none focus:border-amber-600"
+                  >
+                    <option value="">ANO TODO ({currentYear})</option>
+                    {uniqueMonths.map(m => (
+                      <option key={m} value={m}>{getMonthLabel(m)}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-400 uppercase ml-1">Filtrar por SGB</label>
+                  <select 
+                    value={sgbFilter}
+                    onChange={(e) => setSgbFilter(e.target.value)}
+                    className="w-full bg-gray-50 border rounded-xl p-3 text-xs font-black uppercase outline-none focus:border-amber-600"
+                  >
+                    <option value="">TODOS OS SGBS</option>
+                    {uniqueSgbs.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-400 uppercase ml-1">Filtrar por Posto</label>
+                  <select 
+                    value={postoFilter}
+                    onChange={(e) => setPostoFilter(e.target.value)}
+                    className="w-full bg-gray-50 border rounded-xl p-3 text-xs font-black uppercase outline-none focus:border-amber-600"
+                  >
+                    <option value="">TODOS OS POSTOS</option>
+                    {uniqueStations.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-gray-400 uppercase ml-1">Buscar Viatura</label>
+                  <div className="relative">
+                    <input 
+                      type="text"
+                      placeholder="PREFIXO..."
+                      value={prefixSearch}
+                      onChange={(e) => setPrefixSearch(e.target.value)}
+                      className="w-full bg-gray-50 border rounded-xl p-3 pl-10 text-xs font-black uppercase outline-none focus:border-amber-600"
+                    />
+                    <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3.5" />
+                  </div>
+                </div>
+             </div>
+          </div>
+
+          <div className="bg-gray-900 rounded-[2rem] p-6 text-white min-w-[300px] shadow-xl relative overflow-hidden">
+             <div className="absolute top-0 right-0 -mt-8 -mr-8 w-32 h-32 bg-amber-500/20 rounded-full blur-3xl"></div>
+             <p className="text-[10px] font-black text-amber-400 uppercase tracking-widest relative z-10">Total da Frota Selecionada</p>
+             <div className="flex items-end justify-between mt-2 relative z-10">
+                <h4 className="text-4xl font-black tracking-tighter">{totalFleetKm.toLocaleString()} <span className="text-sm text-amber-400 uppercase">KM</span></h4>
+                <div className="bg-white/10 p-2 rounded-xl">
+                   <BarChart className="w-6 h-6" />
+                </div>
+             </div>
+             <div className="mt-4 pt-4 border-t border-white/10 flex justify-between items-center relative z-10">
+                <div className="text-[9px] font-bold text-gray-400 uppercase">Média Mensal: <span className="text-white">{(totalFleetKm / 12).toFixed(0)} KM</span></div>
+                <div className="text-[9px] font-bold text-gray-400 uppercase">Veículos: <span className="text-white">{kmData.length}</span></div>
+             </div>
+          </div>
+        </div>
+
+        <div className="bg-white border rounded-[2.5rem] overflow-hidden shadow-sm">
+          <table className="w-full text-left border-collapse">
+            <thead className="bg-gray-50 border-b">
+              <tr>
+                <th className="p-4 text-[10px] font-black uppercase text-gray-400 tracking-widest pl-8">Viatura</th>
+                {monthFilter ? (
+                  <>
+                    <th className="p-4 text-[10px] font-black uppercase text-gray-400 tracking-widest text-center">Registros</th>
+                    <th className="p-4 text-[10px] font-black uppercase text-gray-400 tracking-widest text-right">KM Inicial</th>
+                    <th className="p-4 text-[10px] font-black uppercase text-gray-400 tracking-widest text-right">KM Final</th>
+                    <th className="p-4 text-[10px] font-black uppercase text-gray-400 tracking-widest text-right pr-8">KM Rodado</th>
+                  </>
+                ) : (
+                  <>
+                    {Array.from({ length: 12 }, (_, i) => (
+                      <th key={i} className="p-2 text-[8px] font-black uppercase text-gray-400 text-center border-l">
+                        {getMonthLabel(`${currentYear}-${(i+1).toString().padStart(2, "0")}`).split('/')[0].substring(0, 3)}
+                      </th>
+                    ))}
+                    <th className="p-4 text-[10px] font-black uppercase text-gray-400 tracking-widest text-right border-l bg-amber-50 pr-8">Total Ano</th>
+                  </>
+                )}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {Object.entries(groupedKmData).map(([station, vehicles]) => (
+                <React.Fragment key={station}>
+                  <tr className="bg-gray-100/50">
+                    <td colSpan={monthFilter ? 5 : 14} className="p-2 pl-8 text-[10px] font-black uppercase text-amber-700 tracking-widest bg-amber-50/50 border-y">
+                      POSTO: {station} ({vehicles.length} Vtrs)
+                    </td>
+                  </tr>
+                  {vehicles.map((v, idx) => (
+                    <tr key={v.prefix} className="hover:bg-gray-50 transition-colors group">
+                      <td className="p-4 pl-8">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-[10px] font-black text-gray-400 group-hover:bg-amber-100 group-hover:text-amber-600 transition-colors">
+                            {idx + 1}
+                          </div>
+                          <div>
+                            <span className="font-black text-sm uppercase text-gray-900">{v.prefix}</span>
+                            <p className="text-[8px] font-bold text-gray-400 uppercase">{v.sgb}</p>
+                          </div>
+                        </div>
+                      </td>
+                      
+                      {monthFilter ? (
+                        (() => {
+                          const mIndex = parseInt(monthFilter.split("-")[1]) - 1;
+                          const m = v.monthlyStats[mIndex];
+                          return (
+                            <>
+                              <td className="p-4 text-center font-bold text-gray-400 text-xs">{m.count} logs</td>
+                              <td className="p-4 text-right font-medium text-gray-500 text-sm">{(m.lastKm - m.km).toLocaleString()}</td>
+                              <td className="p-4 text-right font-medium text-gray-500 text-sm">{m.lastKm.toLocaleString()}</td>
+                              <td className="p-4 text-right font-black text-amber-600 text-sm pr-8">+{m.km.toLocaleString()}</td>
+                            </>
+                          );
+                        })()
+                      ) : (
+                        <>
+                          {v.monthlyStats.map((m, mIdx) => (
+                            <td key={mIdx} className="p-2 text-center text-[10px] font-bold border-l">
+                              {m.km > 0 ? (
+                                <span className="text-gray-900">{m.km.toLocaleString()}</span>
+                              ) : (
+                                <span className="text-gray-200">---</span>
+                              )}
+                            </td>
+                          ))}
+                          <td className="p-4 text-right font-black text-gray-900 text-sm border-l bg-amber-50/50 pr-8">
+                            {v.totalYearKm.toLocaleString()}
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  ))}
+                </React.Fragment>
+              ))}
+            </tbody>
+            {kmData.length > 0 && (
+              <tfoot className="bg-gray-900 text-white">
+                <tr>
+                  <td className="p-4 pl-8 font-black uppercase text-xs">Total Geral</td>
+                  {monthFilter ? (
+                    <>
+                      <td className="p-4 text-center font-bold text-[10px] text-gray-400">{kmData.reduce((acc, v) => acc + v.monthlyStats[parseInt(monthFilter.split("-")[1]) - 1].count, 0)} logs</td>
+                      <td className="p-4 text-right text-xs">---</td>
+                      <td className="p-4 text-right text-xs">---</td>
+                      <td className="p-4 text-right font-black text-amber-400 text-sm pr-8">{totalFleetKm.toLocaleString()} KM</td>
+                    </>
+                  ) : (
+                    <>
+                      {Array.from({ length: 12 }, (_, i) => (
+                        <td key={i} className="p-2 text-center text-[10px] font-black border-l border-white/10">
+                          {kmData.reduce((acc, v) => acc + v.monthlyStats[i].km, 0).toLocaleString()}
+                        </td>
+                      ))}
+                      <td className="p-4 text-right font-black text-amber-400 text-sm border-l border-white/10 pr-8">
+                        {totalFleetKm.toLocaleString()}
+                      </td>
+                    </>
+                  )}
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+
+        {/* Dashboard Statistics section Enhanced */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+           {/* Distribuição por Posto */}
+           <div className="bg-white border rounded-[2.5rem] p-8 shadow-sm">
+              <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                 <PieChart className="w-4 h-4" /> Por Posto (Top 5)
+              </h4>
+              <div className="space-y-4">
+                 {statsByStation.slice(0, 5).map(s => (
+                   <div key={s.name} className="space-y-1">
+                      <div className="flex justify-between text-[10px] font-black uppercase">
+                         <span className="text-gray-900 truncate max-w-[120px]">{s.name}</span>
+                         <span className="text-amber-600">{((s.totalKm / (totalFleetKm || 1)) * 100).toFixed(1)}%</span>
+                      </div>
+                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                         <div className="h-full bg-amber-500 rounded-full" style={{ width: `${(s.totalKm / (totalFleetKm || 1)) * 100}%` }}></div>
+                      </div>
+                   </div>
+                 ))}
+              </div>
+           </div>
+
+           {/* Distribuição por SGB */}
+           <div className="bg-white border rounded-[2.5rem] p-8 shadow-sm">
+              <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                 <ShieldCheck className="w-4 h-4" /> Por SGB
+              </h4>
+              <div className="space-y-4">
+                 {Object.entries(statsBySgb).sort((a,b) => b[1] - a[1]).map(([name, km]) => (
+                   <div key={name} className="space-y-1">
+                      <div className="flex justify-between text-[10px] font-black uppercase">
+                         <span className="text-gray-900">{name}</span>
+                         <span className="text-blue-600">{((km / (totalFleetKm || 1)) * 100).toFixed(1)}%</span>
+                      </div>
+                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                         <div className="h-full bg-blue-500 rounded-full" style={{ width: `${(km / (totalFleetKm || 1)) * 100}%` }}></div>
+                      </div>
+                   </div>
+                 ))}
+              </div>
+           </div>
+
+           {/* Comparação UR vs ABS */}
+           <div className="bg-white border rounded-[2.5rem] p-8 shadow-sm">
+              <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                 <RefreshCw className="w-4 h-4" /> UR vs ABS vs Outros
+              </h4>
+              <div className="space-y-4">
+                 {Object.entries(statsByType).sort((a,b) => b[1] - a[1]).map(([name, km]) => (
+                   <div key={name} className="space-y-1">
+                      <div className="flex justify-between text-[10px] font-black uppercase">
+                         <span className="text-gray-900">{name}</span>
+                         <span className="text-indigo-600">{km.toLocaleString()} KM</span>
+                      </div>
+                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                         <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(km / (totalFleetKm || 1)) * 100}%` }}></div>
+                      </div>
+                   </div>
+                 ))}
+              </div>
+           </div>
+
+           {/* Top 3 Viaturas */}
+           <div className="bg-white border rounded-[2.5rem] p-8 shadow-sm">
+              <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                 <TrendingUp className="w-4 h-4" /> Top 3 Viaturas
+              </h4>
+              <div className="space-y-3">
+                 {kmData.slice(0, 3).map((v, idx) => (
+                   <div key={v.prefix} className="flex items-center gap-3 bg-gray-50 p-2 rounded-2xl border border-gray-100">
+                      <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center text-xs font-black text-amber-700">
+                         {idx + 1}
+                      </div>
+                      <div>
+                         <p className="text-xs font-black text-gray-900 leading-none">{v.prefix}</p>
+                         <p className="text-[8px] font-bold text-gray-400 uppercase">{v.totalYearKm.toLocaleString()} KM</p>
+                      </div>
+                      {idx === 0 && <TrendingUp className="w-4 h-4 text-green-500 ml-auto" />}
+                   </div>
+                 ))}
+              </div>
+           </div>
+        </div>
+
+        <Footer />
+      </div>
+    );
+  };
 
   const renderFinalMonthlyBook = () => {
     const prefixesArray = Array.from(selectedPrefixes);
@@ -5495,6 +5687,7 @@ export const Reports: React.FC<ReportsProps> = ({
           {activeReport === "weekly_ab" &&
             renderWeeklyControlReport("AB/AÉREA")}
           {activeReport === "retroactive_logs" && renderRetroactiveLogsReport()}
+          {activeReport === "km_monthly" && renderKmMonthlyReport()}
           {activeReport === "final_monthly_book" && renderFinalMonthlyBook()}
           {/* Print Footer for Page Numbering */}
           <div className="hidden print:flex fixed bottom-0 left-0 right-0 h-8 items-center justify-between px-8 text-[8px] text-gray-400 border-t border-gray-100 bg-white">
@@ -5872,16 +6065,50 @@ export const Reports: React.FC<ReportsProps> = ({
       <div className="grid grid-cols-1 gap-4 no-print">
         <div className="bg-gray-50 p-6 rounded-3xl border space-y-6">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <h4 className="text-xs font-black uppercase text-gray-400 flex items-center gap-2">
-              <Filter className="w-4 h-4" /> Filtros de Relatório
-            </h4>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="text-xs font-black uppercase text-gray-400 flex items-center gap-2">
+                <Filter className="w-4 h-4" /> Filtros de Relatório
+              </h4>
+              <span className="text-[10px] font-black uppercase px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl flex items-center gap-1.5">
+                <Zap className="w-3 h-3 text-blue-600" />
+                Carregamento Otimizado ({logs.length} registros ativos)
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setMonthFilter("");
+                  onFetch("", "all");
+                }}
+                disabled={isLoading}
+                className="bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-3 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-1.5 transition-all disabled:opacity-50"
+                title="Carregar todos os lançamentos históricos da planilha"
+              >
+                <Clock className="w-3.5 h-3.5" />
+                Histórico Completo
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const now = new Date();
+                  const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                  setMonthFilter(curMonth);
+                  onFetch("", "");
+                }}
+                disabled={isLoading}
+                className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-3 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-1.5 transition-all disabled:opacity-50"
+                title="Voltar aos últimos 30 dias com o mês atual para velocidade instantânea"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                Últimos 30 Dias
+              </button>
               <button
                 onClick={() =>
                   onFetch(Array.from(selectedPrefixes).join(","), monthFilter)
                 }
                 disabled={isLoading}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-2xl text-[10px] font-black uppercase flex items-center justify-center gap-2 shadow-lg transition-all disabled:opacity-50 active:scale-95"
+                className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-2xl text-[10px] font-black uppercase flex items-center justify-center gap-2 shadow-lg transition-all disabled:opacity-50 active:scale-95"
               >
                 {isLoading ? (
                   <BarChart className="w-4 h-4 animate-spin" />
@@ -5894,13 +6121,12 @@ export const Reports: React.FC<ReportsProps> = ({
                 onClick={() => {
                   setMonthFilter("");
                   setPostoFilter("");
-                  setVehicleStatusFilter("");
                   setSelectedPrefixes(new Set());
                   setPrefixSearch("");
                   onFetch("", "");
                 }}
                 disabled={isLoading}
-                className="bg-white border hover:bg-gray-100 text-gray-600 px-4 py-2.5 rounded-2xl text-[10px] font-black uppercase flex items-center justify-center transition-all disabled:opacity-50"
+                className="bg-white border hover:bg-gray-100 text-gray-600 px-3.5 py-2.5 rounded-2xl text-[10px] font-black uppercase flex items-center justify-center transition-all disabled:opacity-50"
                 title="Limpar Filtros"
               >
                 <X className="w-4 h-4" />
@@ -5908,15 +6134,15 @@ export const Reports: React.FC<ReportsProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="space-y-2 relative animate-in fade-in">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-3 space-y-2 relative animate-in fade-in">
               <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
                 Mês de Referência
               </label>
               <div className="relative">
                 <select
                   value={monthFilter}
-                  onChange={(e) => setMonthFilter(e.target.value)}
+                  onChange={(e) => handleMonthChange(e.target.value)}
                   className="w-full border-2 rounded-2xl p-3 pr-10 text-sm font-bold outline-none focus:border-blue-500 bg-white shadow-sm appearance-none cursor-pointer"
                 >
                   <option key="all-months" value="">
@@ -5934,7 +6160,7 @@ export const Reports: React.FC<ReportsProps> = ({
               </div>
             </div>
 
-            <div className="space-y-2 relative animate-in fade-in">
+            <div className="lg:col-span-3 space-y-2 relative animate-in fade-in">
               <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
                 Filtrar por Posto
               </label>
@@ -5963,127 +6189,65 @@ export const Reports: React.FC<ReportsProps> = ({
               </div>
             </div>
 
-            <div className="space-y-2 relative animate-in fade-in">
+            <div className="lg:col-span-6 space-y-3">
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
-                  Status das Viaturas
+                  Seleção de Viaturas ({selectedPrefixes.size} selecionadas)
                 </label>
-                {vehicleStatusFilter && (
-                  <span className="text-[8px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-black uppercase">
-                    Filtro Ativo
-                  </span>
-                )}
-              </div>
-              <div className="relative">
-                <select
-                  value={vehicleStatusFilter}
-                  onChange={(e) => setVehicleStatusFilter(e.target.value)}
-                  className="w-full border-2 rounded-2xl p-3 pr-10 text-sm font-bold outline-none focus:border-blue-500 bg-white shadow-sm appearance-none cursor-pointer"
-                >
-                  <option value="">Todos os Status ({uniquePrefixes.length} VTRs)</option>
-                  <optgroup label="Status Operacional">
-                    <option value="OPERANDO">Operando ({statusCounts.operando} VTRs)</option>
-                    <option value="BAIXADA">Baixada ({statusCounts.baixada} VTRs)</option>
-                    <option value="RESERVA">Reserva ({statusCounts.reserva} VTRs)</option>
-                  </optgroup>
-                  <optgroup label="Situação de Checklist">
-                    <option value="OK">Sem Novidade / Regular ({statusCounts.ok} VTRs)</option>
-                    <option value="CN">Com Novidade / Avarias ({statusCounts.cn} VTRs)</option>
-                  </optgroup>
-                </select>
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
-                  <Activity className="w-4 h-4 text-gray-400" />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest">
-                  Seleção de Viaturas ({selectedPrefixes.size} selecionadas de {visiblePrefixes.length})
-                </label>
-                {vehicleStatusFilter && (
-                  <span className="text-[8px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-blue-600 border border-blue-200 uppercase">
-                    Status: {vehicleStatusFilter}
-                  </span>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={selectAllPrefixes}
-                  className="text-[9px] font-black uppercase text-blue-600 hover:underline animate-fade-in"
-                >
-                  Selecionar Todas ({visiblePrefixes.length})
-                </button>
-                <span className="text-gray-300">|</span>
-                <button
-                  onClick={deselectAllPrefixes}
-                  className="text-[9px] font-black uppercase text-red-600 hover:underline animate-fade-in"
-                >
-                  Desmarcar Todas
-                </button>
-              </div>
-            </div>
-
-            <div className="relative">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Pesquisar viatura na lista..."
-                value={prefixSearch}
-                onChange={(e) => setPrefixSearch(e.target.value)}
-                className="w-full border-2 rounded-2xl p-3 pl-12 text-sm font-bold outline-none focus:border-blue-500 bg-white shadow-sm"
-              />
-            </div>
-
-            <div className="bg-white border-2 rounded-2xl p-4 max-h-48 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 shadow-inner">
-              {visiblePrefixes.map((prefix) => {
-                const vehicle = settings.vehicles?.find(
-                  (v) => normalizePrefix(v.prefix) === prefix,
-                );
-                const info = vehicleStatusMap[prefix];
-                const opStatus = info?.latestOperationalStatus || "OPERANDO";
-                const isSelected = selectedPrefixes.has(prefix);
-
-                let badgeColor = "bg-green-100 text-green-700";
-                let badgeText = "OP";
-                if (info?.hasBaixada) {
-                  badgeColor = "bg-red-100 text-red-700";
-                  badgeText = "BX";
-                } else if (info?.hasReserva) {
-                  badgeColor = "bg-orange-100 text-orange-700";
-                  badgeText = "RS";
-                }
-
-                return (
+                <div className="flex gap-2">
                   <button
-                    key={prefix}
-                    onClick={() => togglePrefix(prefix)}
-                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase transition-all border-2 text-center flex items-center justify-between gap-1.5 ${
-                      isSelected
-                        ? "bg-blue-600 border-blue-600 text-white shadow-md font-black"
-                        : "bg-gray-50 border-gray-100 text-gray-500 hover:border-gray-300 font-bold"
-                    }`}
-                    title={`${prefix} | Posto: ${vehicle?.station ? vehicle.station : "Sem Posto"} | Status: ${opStatus}${info?.hasNovelty ? " (Com Novidade)" : ""}`}
+                    onClick={selectAllPrefixes}
+                    className="text-[9px] font-black uppercase text-blue-600 hover:underline animate-fade-in"
                   >
-                    <span className="truncate flex-1 text-left">{prefix}</span>
-                    <span
-                      className={`text-[8px] font-black px-1.5 py-0.5 rounded ${
-                        isSelected ? "bg-white/20 text-white" : badgeColor
-                      }`}
-                    >
-                      {badgeText}
-                    </span>
+                    Selecionar Todas
                   </button>
-                );
-              })}
-              {visiblePrefixes.length === 0 && (
-                <div className="col-span-full py-4 text-center text-[10px] font-bold text-gray-400 uppercase">
-                  Nenhuma viatura encontrada com estes filtros.
+                  <span className="text-gray-300">|</span>
+                  <button
+                    onClick={deselectAllPrefixes}
+                    className="text-[9px] font-black uppercase text-red-600 hover:underline animate-fade-in"
+                  >
+                    Desmarcar Todas
+                  </button>
                 </div>
-              )}
+              </div>
+
+              <div className="relative mb-3">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Pesquisar viatura na lista..."
+                  value={prefixSearch}
+                  onChange={(e) => setPrefixSearch(e.target.value)}
+                  className="w-full border-2 rounded-2xl p-3 pl-12 text-sm font-bold outline-none focus:border-blue-500 bg-white shadow-sm"
+                />
+              </div>
+
+              <div className="bg-white border-2 rounded-2xl p-4 max-h-48 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 shadow-inner">
+                {visiblePrefixes.map((prefix) => {
+                  const vehicle = settings.vehicles?.find(
+                    (v) => normalizePrefix(v.prefix) === prefix,
+                  );
+                  return (
+                    <button
+                      key={prefix}
+                      onClick={() => togglePrefix(prefix)}
+                      className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase transition-all border-2 text-center truncate ${
+                        selectedPrefixes.has(prefix)
+                          ? "bg-blue-600 border-blue-600 text-white shadow-md font-black"
+                          : "bg-gray-50 border-gray-100 text-gray-400 hover:border-gray-300 font-bold"
+                      }`}
+                      title={vehicle?.station ? `Posto: ${vehicle.station}` : "Sem Posto"}
+                    >
+                      {prefix}
+                    </button>
+                  );
+                })}
+                {visiblePrefixes.length === 0 && (
+                  <div className="col-span-full py-4 text-center text-[10px] font-bold text-gray-400 uppercase">
+                    Nenhuma viatura encontrada com estes filtros.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -6127,13 +6291,10 @@ export const Reports: React.FC<ReportsProps> = ({
               />
               {isLoading ? "Sincronizando..." : "Sincronizar Dados Agora"}
             </button>
-            {(monthFilter !== "all" && monthFilter !== "" || postoFilter !== "" || vehicleStatusFilter !== "" || selectedPrefixes.size > 0) && (
+            {(monthFilter !== "all" || selectedPrefixes.size > 0) && (
               <button
                 onClick={() => {
-                  setMonthFilter("");
-                  setPostoFilter("");
-                  setVehicleStatusFilter("");
-                  setPrefixSearch("");
+                  setMonthFilter("all");
                   setSelectedPrefixes(new Set());
                 }}
                 className="bg-gray-100 hover:bg-gray-200 text-gray-600 px-8 py-3 rounded-2xl text-[10px] font-black uppercase transition-all active:scale-95"
@@ -6238,13 +6399,45 @@ export const Reports: React.FC<ReportsProps> = ({
               color: "bg-blue-800",
             },
             {
+              id: "km_monthly",
+              title: "Relatório de KM Rodado",
+              desc: "Estatísticas de quilometragem rodada mensal ou anual.",
+              icon: TrendingUp,
+              color: "bg-amber-600",
+            },
+            {
               id: "final_monthly_book",
               title: "Livro Mensal Final",
               desc: "Arquivo único/consolidado contendo relatórios sequenciais das viaturas selecionadas.",
               icon: FileText,
               color: "bg-gradient-to-br from-blue-900 to-indigo-950 border-2 border-yellow-400 font-black",
             },
-          ].map((report) => (
+          ].filter(report => {
+            if (!currentUser) return false;
+            if (currentUser.username.toLowerCase() === 'cavalieri') return true;
+            if (currentUser.permissions.admin) return true;
+            
+            const manualMapping: Record<string, keyof UserPermissions> = {
+              'fleet_dashboard': 'reportFleetDashboard',
+              'novelties': 'reportNovelties',
+              'synthetic': 'reportSynthetic',
+              'analytical': 'reportAnalytical',
+              'full': 'reportFull',
+              'monthly_grouped': 'reportMonthlyGrouped',
+              'history': 'reportHistory',
+              'daily_control': 'reportDailyControl',
+              'daily_control_motos': 'reportDailyControlMotos',
+              'weekly_leves': 'reportWeeklyLeves',
+              'weekly_motos': 'reportWeeklyMotos',
+              'weekly_ab': 'reportWeeklyAb',
+              'retroactive_logs': 'reportRetroactiveLogs',
+              'km_monthly': 'reportKmMonthly',
+              'final_monthly_book': 'reportFinalMonthlyBook'
+            };
+            
+            const finalKey = manualMapping[report.id];
+            return !!currentUser.permissions[finalKey];
+          }).map((report) => (
             <button
               key={report.id}
               onClick={() => setActiveReport(report.id as ReportType)}
@@ -6443,9 +6636,9 @@ export const Reports: React.FC<ReportsProps> = ({
                                         alt={`Vista ${idx}`}
                                         referrerPolicy="no-referrer"
                                       />
-                                      {dmgs.map((d: any) => (
+                                      {dmgs.map((d: any, dIdx: number) => (
                                         <div
-                                          key={d.id}
+                                          key={`dmg-${idx}-${d.id || dIdx}-${dIdx}`}
                                           className="absolute w-2.5 h-2.5 bg-red-600 rounded-full border-2 border-white shadow-sm -translate-x-1/2 -translate-y-1/2"
                                           style={{
                                             left: `${d.x}%`,

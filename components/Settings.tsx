@@ -1,8 +1,10 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ErrorBoundary } from './ErrorBoundary';
+import { GoogleLoginButton } from './GoogleLoginButton';
 import { AppSettings, ChecklistItem, ItemFrequency, AspectRatio, LogEntry, User, UserPermissions } from '../types';
 import { FIXED_GOOGLE_SHEET_URL } from '../constants';
+import { filterLogsLast30Days, filterLogsBySelectedDates } from '../services/dateFilterService';
 import { 
   Trash2, 
   Plus, 
@@ -19,6 +21,7 @@ import {
   Calendar,
   X,
   Eye as ViewIcon,
+  EyeOff,
   AlertTriangle,
   Activity,
   Wifi,
@@ -56,12 +59,17 @@ import {
   Database,
   Download,
   Upload,
-  ExternalLink
+  ExternalLink,
+  Shield,
+  Settings as SettingsIcon,
+  Video,
+  Film
 } from 'lucide-react';
 import { Header } from './Header';
 import { Footer } from './Footer';
 
 import { Reports } from './Reports';
+import { compressImage } from '../services/imageUtils';
 import { VEHICLE_TYPES } from '../constants';
 
 interface AuditUser {
@@ -72,10 +80,9 @@ interface AuditUser {
   password?: string;
   rank?: string;
   permissions?: UserPermissions;
+  forcePasswordChange?: boolean;
   createdAt?: string;
 }
-
-export type TabType = 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login' | 'logs_admin';
 
 interface SettingsProps {
   settings: AppSettings;
@@ -84,9 +91,7 @@ interface SettingsProps {
   onClose: () => void;
   onExportModel: () => void;
   onImportModel: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  initialTab?: TabType;
-  tabTrigger?: number;
-  onTabChange?: (tab: TabType) => void;
+  initialTab?: 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login';
   setCurrentUser: (user: User | null) => void;
   googleUser: any;
   onGoogleSignIn: () => void;
@@ -94,11 +99,14 @@ interface SettingsProps {
   isSyncing: boolean;
   connectionStatus: 'idle' | 'checking' | 'online' | 'offline';
   onCheckConnection: () => void;
+  onPerformFullSync?: () => Promise<void> | void;
   reportConfig?: {
     prefix: string;
     reportType?: any;
   };
 }
+
+type TabType = 'items' | 'images' | 'style' | 'about' | 'admin' | 'manual' | 'reports' | 'vehicles' | 'stations' | 'users' | 'report_editor' | 'cloud' | 'login' | 'logs_admin';
 
 export const Settings: React.FC<SettingsProps> = ({ 
   settings, 
@@ -108,8 +116,6 @@ export const Settings: React.FC<SettingsProps> = ({
   onExportModel,
   onImportModel,
   initialTab = 'items',
-  tabTrigger,
-  onTabChange,
   setCurrentUser,
   googleUser,
   onGoogleSignIn,
@@ -117,63 +123,63 @@ export const Settings: React.FC<SettingsProps> = ({
   isSyncing,
   connectionStatus,
   onCheckConnection,
+  onPerformFullSync,
   reportConfig
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
 
   const isTabAccessible = (tabId: string) => {
-    if (tabId === 'manual' || tabId === 'about') return true;
+    if (tabId === 'manual' || tabId === 'about' || tabId === 'login') return true;
 
     // Usuário Mestre Cavalieri sempre tem acesso total
     if (currentUser?.username.toLowerCase() === 'cavalieri') return true;
 
-    // Somente o super usuario cavalieri tem acesso as telas Gestão de lançamento, Auditoria e Nuvem.
-    if (['admin', 'logs_admin', 'cloud'].includes(tabId)) {
+    const permissions = currentUser?.permissions as UserPermissions;
+    if (!permissions) return false;
+
+    // Telas Restritas Somente ao Super Usuário Cavalieri
+    if (['cloud', 'logs_admin', 'admin', 'report_editor'].includes(tabId)) {
       return currentUser?.username.toLowerCase() === 'cavalieri';
     }
 
-    // Se não há usuário logado, permitir as configurações do sistema
-    if (!currentUser) return true;
+    // Admin Geral continua como mestre do sistema para as demais telas
+    if (permissions.admin) return true;
 
-    // Gestão de usuários requer permissão específica de usuários ou admin/settings
-    if (tabId === 'users') {
-      const perms = currentUser.permissions as any;
-      return !!(perms?.manageUsers || perms?.settings || perms?.admin);
+    // Mapeamento granular estrito para todos os usuários
+    if (tabId === 'stations') return !!permissions.manageStations;
+    if (tabId === 'vehicles') return !!permissions.manageVehicles;
+    if (tabId === 'users') return !!permissions.manageUsers;
+    if (tabId === 'items') return !!permissions.manageItems;
+    if (tabId === 'images') return !!permissions.manageImages;
+    if (tabId === 'style') return !!permissions.manageStyle;
+
+    if (tabId === 'reports') {
+      return !!(
+        permissions.reports || 
+        permissions.reportNovelties || 
+        permissions.reportSynthetic || 
+        permissions.reportAnalytical || 
+        permissions.reportFull || 
+        permissions.reportMonthlyGrouped || 
+        permissions.reportHistory || 
+        permissions.reportDailyControl || 
+        permissions.reportDailyControlMotos || 
+        permissions.reportWeeklyLeves || 
+        permissions.reportWeeklyMotos || 
+        permissions.reportWeeklyAb || 
+        permissions.reportRetroactiveLogs || 
+        permissions.reportFinalMonthlyBook || 
+        permissions.reportFleetDashboard || 
+        permissions.reportKmMonthly
+      );
     }
 
-    const permissions = currentUser?.permissions as any;
-    // Como os Ajustes são liberados no sistema, as abas operacionais são acessíveis por padrão
-    if (!permissions) return true;
-
-    // Bloqueio explícito de settings === false
-    if (permissions.settings === false) return false;
-
-    // Restrições granulares caso estejam explicitamente negadas como false
-    if (tabId === 'stations' && permissions.manageStations === false) return false;
-    if (tabId === 'vehicles' && permissions.manageVehicles === false) return false;
-    if (tabId === 'items' && permissions.manageItems === false) return false;
-    if (tabId === 'images' && permissions.manageImages === false) return false;
-    if (tabId === 'style' && permissions.manageStyle === false) return false;
-    if (tabId === 'reports' && permissions.reports === false) return false;
-    if (tabId === 'report_editor' && permissions.reports === false) return false;
-
-    return true;
+    return false;
   };
 
   useEffect(() => {
     if (!isTabAccessible(activeTab)) {
-      // Ao acessar os ajustes, nunca exibir a tela manual como padrão
-      const fallbackTab: TabType = isTabAccessible('items') 
-        ? 'items' 
-        : isTabAccessible('vehicles') 
-          ? 'vehicles' 
-          : isTabAccessible('stations') 
-            ? 'stations' 
-            : isTabAccessible('reports') 
-              ? 'reports' 
-              : 'about';
-      setActiveTab(fallbackTab);
-      onTabChange?.(fallbackTab);
+      setActiveTab('manual');
     }
   }, [activeTab, currentUser]);
 
@@ -196,7 +202,7 @@ export const Settings: React.FC<SettingsProps> = ({
   
   const isMasterUser = !!currentUser && currentUser.username.toLowerCase() === 'cavalieri';
   
-  const isSuperUser = !currentUser || (
+  const isSuperUser = !!currentUser && (
                       currentUser.username.toLowerCase() === 'cavalieri' || 
                       currentUser.permissions?.settings === true
                     );
@@ -212,6 +218,7 @@ export const Settings: React.FC<SettingsProps> = ({
     currentKm: 0
   });
   const [editingVehicleId, setEditingVehicleId] = useState<string | null>(null);
+  const [editingStationId, setEditingStationId] = useState<string | null>(null);
   const [newStation, setNewStation] = useState({ name: '', sgbId: '' });
   const [newSGB, setNewSGB] = useState({ name: '', gbId: '' });
   const [newGB, setNewGB] = useState({ name: '' });
@@ -226,13 +233,24 @@ export const Settings: React.FC<SettingsProps> = ({
   
   // Data States
   const [adminSubTab, setAdminSubTab] = useState<'dashboard' | 'logs' | 'users' | 'audit'>('dashboard');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const allLogsCacheRef = useRef<LogEntry[] | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>(() => {
+    try {
+      const cached = localStorage.getItem('checkviatura_cached_logs');
+      if (!cached) return [];
+      const parsed = JSON.parse(cached);
+      return Array.isArray(parsed) ? filterLogsLast30Days(parsed) : [];
+    } catch {
+      return [];
+    }
+  });
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<AuditUser[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [logFilter, setLogFilter] = useState('');
+  const [searchTermUsers, setSearchTermUsers] = useState('');
 
   // Manual Sub-tab & Documents state
   const [manualSubTab, setManualSubTab] = useState<'instructions' | 'links'>('instructions');
@@ -296,7 +314,15 @@ export const Settings: React.FC<SettingsProps> = ({
       signAsChefeMotoristas: false,
       signAsCmtProntidao: false,
       signAsCmtPosto: false,
-      signAsCmtSgb: false
+      signAsCmtSgb: false,
+      manageStations: false,
+      manageVehicles: false,
+      manageUsers: false,
+      manageItems: false,
+      manageImages: false,
+      manageStyle: false,
+      manageDatabase: false,
+      manageLogs: false
     } 
   });
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
@@ -308,6 +334,7 @@ export const Settings: React.FC<SettingsProps> = ({
     password: '', 
     name: '', 
     rank: '',
+    forcePasswordChange: false,
     permissions: {
       checklist: true,
       reports: false,
@@ -315,20 +342,18 @@ export const Settings: React.FC<SettingsProps> = ({
       admin: false
     }
   });
+  const [showUserFormPassword, setShowUserFormPassword] = useState(false);
+  const [quickPasswordModalUser, setQuickPasswordModalUser] = useState<User | null>(null);
+  const [quickNewPassword, setQuickNewPassword] = useState('');
+  const [quickConfirmPassword, setQuickConfirmPassword] = useState('');
+  const [quickForceChange, setQuickForceChange] = useState(false);
+  const [showQuickNewPassword, setShowQuickNewPassword] = useState(false);
   
   const printMirrorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (initialTab) {
-      setActiveTab(initialTab);
-    }
+    setActiveTab(initialTab);
   }, [initialTab]);
-
-  useEffect(() => {
-    if (tabTrigger !== undefined) {
-      setActiveTab(initialTab || 'items');
-    }
-  }, [tabTrigger]);
 
   const hasAttemptedInitialFetch = useRef(false);
 
@@ -343,6 +368,26 @@ export const Settings: React.FC<SettingsProps> = ({
   }, [activeTab]);
 
   const fetchLogs = async (prefix?: string, month?: string, retryCount = 0) => {
+    const isAllRequested = month === 'all' || month === 'ALL';
+    const cleanPrefix = (prefix && prefix.trim() !== '') ? prefix.trim() : undefined;
+    const cleanMonth = (month && !isAllRequested && month.trim() !== '') ? month.trim() : undefined;
+
+    // Se já temos a lista completa em cache na memória e o usuário está filtrando por mês ou pediu tudo
+    if (allLogsCacheRef.current && allLogsCacheRef.current.length > 0 && retryCount === 0) {
+      if (cleanMonth) {
+        const filtered = filterLogsBySelectedDates(allLogsCacheRef.current, { month: cleanMonth, prefix: cleanPrefix });
+        setLogs(filtered);
+        return;
+      } else if (isAllRequested) {
+        setLogs(cleanPrefix ? filterLogsBySelectedDates(allLogsCacheRef.current, { prefix: cleanPrefix }) : allLogsCacheRef.current);
+        return;
+      } else if (!cleanMonth && !isAllRequested && !cleanPrefix) {
+        // Carga padrão: últimos 30 dias para velocidade instantânea
+        setLogs(filterLogsLast30Days(allLogsCacheRef.current));
+        return;
+      }
+    }
+
     const rawUrl = localSettings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
     const targetUrl = rawUrl?.trim();
     
@@ -353,17 +398,11 @@ export const Settings: React.FC<SettingsProps> = ({
     
     if (isLoadingLogs && retryCount === 0) return;
     setIsLoadingLogs(true);
-    
-    const cleanPrefix = (prefix && prefix.trim() !== '') ? prefix.trim() : undefined;
-    const cleanMonth = (month && month !== 'all' && month.trim() !== '') ? month.trim() : undefined;
 
     console.log(`[Tentativa ${retryCount + 1}] Buscando logs: ${targetUrl}`);
     
     try {
-      let url = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getLogs`;
-      if (cleanPrefix) url += `&prefix=${encodeURIComponent(cleanPrefix)}`;
-      if (cleanMonth) url += `&month=${encodeURIComponent(cleanMonth)}`;
-      url += `&_t=${Date.now()}`;
+      let url = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getLogs&_t=${Date.now()}`;
       
       const response = await fetch(url, {
         method: 'GET',
@@ -375,7 +414,18 @@ export const Settings: React.FC<SettingsProps> = ({
 
       const result = await response.json();
       if (Array.isArray(result)) {
-        setLogs(result.filter(log => log && (log.id || log.ID)));
+        const validLogs: LogEntry[] = result.filter(log => log && (log.id || log.ID));
+        allLogsCacheRef.current = validLogs;
+
+        if (cleanMonth) {
+          // Respeita rigorosamente o mês escolhido
+          setLogs(filterLogsBySelectedDates(validLogs, { month: cleanMonth, prefix: cleanPrefix }));
+        } else if (isAllRequested) {
+          setLogs(cleanPrefix ? filterLogsBySelectedDates(validLogs, { prefix: cleanPrefix }) : validLogs);
+        } else {
+          // Ao carregar o sistema carregar no máximo os últimos 30 dias para máxima rapidez
+          setLogs(filterLogsLast30Days(validLogs));
+        }
       }
     } catch (err) {
       console.error(`Erro na tentativa ${retryCount + 1} ao buscar logs:`, err);
@@ -477,11 +527,23 @@ export const Settings: React.FC<SettingsProps> = ({
   };
 
   const handleSaveUser = async () => {
-    if (!newUser.username || !newUser.password) {
-      alert("Preencha Username e Senha para o usuário.");
+    if (!newUser.username) {
+      alert("Preencha o Username do usuário.");
+      return;
+    }
+    if (!editingUserId && (!newUser.password || !newUser.password.trim())) {
+      alert("Preencha Username e Senha para o novo usuário.");
       return;
     }
     
+    // Se for edição e não digitou nova senha, mantém a senha atual cadastrada
+    const existingAuditUser = usersList.find(u => (u.id && u.id === editingUserId) || u.username === newUser.username);
+    const resolvedPassword = (newUser.password && newUser.password.trim() !== '')
+      ? newUser.password.trim()
+      : (existingAuditUser?.password || '');
+
+    const userPayload = { action: 'saveUser', ...newUser, password: resolvedPassword };
+
     setIsSavingUser(true);
     const rawUrl = localSettings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
     const targetUrl = rawUrl?.trim();
@@ -493,7 +555,7 @@ export const Settings: React.FC<SettingsProps> = ({
         headers: {
           'Content-Type': 'text/plain;charset=utf-8'
         },
-        body: JSON.stringify({ action: 'saveUser', ...newUser })
+        body: JSON.stringify(userPayload)
       }).catch(err => {
         console.warn("Erro CORS ao salvar usuário, tentando no-cors...", err);
         return fetch(targetUrl, {
@@ -502,7 +564,7 @@ export const Settings: React.FC<SettingsProps> = ({
           headers: {
             'Content-Type': 'text/plain;charset=utf-8'
           },
-          body: JSON.stringify({ action: 'saveUser', ...newUser })
+          body: JSON.stringify(userPayload)
         });
       });
       
@@ -536,9 +598,10 @@ export const Settings: React.FC<SettingsProps> = ({
       id: user.id,
       username: user.username,
       email: user.email || '',
-      password: user.password,
+      password: '', // A senha atual NUNCA deve aparecer na edição
       name: user.name,
       rank: user.rank,
+      forcePasswordChange: user.forcePasswordChange || false,
       permissions: {
         checklist: user.permissions?.checklist ?? true,
         reports: user.permissions?.reports ?? false,
@@ -549,6 +612,14 @@ export const Settings: React.FC<SettingsProps> = ({
         signAsCmtProntidao: user.permissions?.signAsCmtProntidao ?? false,
         signAsCmtPosto: user.permissions?.signAsCmtPosto ?? false,
         signAsCmtSgb: user.permissions?.signAsCmtSgb ?? false,
+        manageStations: user.permissions?.manageStations ?? false,
+        manageVehicles: user.permissions?.manageVehicles ?? false,
+        manageUsers: user.permissions?.manageUsers ?? false,
+        manageItems: user.permissions?.manageItems ?? false,
+        manageImages: user.permissions?.manageImages ?? false,
+        manageStyle: user.permissions?.manageStyle ?? false,
+        manageDatabase: user.permissions?.manageDatabase ?? false,
+        manageLogs: user.permissions?.manageLogs ?? false,
       }
     });
     setEditingUserId(user.id || user.username);
@@ -561,6 +632,7 @@ export const Settings: React.FC<SettingsProps> = ({
       password: '', 
       name: '',
       rank: '',
+      forcePasswordChange: false,
       permissions: { 
         checklist: true, 
         reports: false, 
@@ -570,7 +642,15 @@ export const Settings: React.FC<SettingsProps> = ({
         signAsChefeMotoristas: false,
         signAsCmtProntidao: false,
         signAsCmtPosto: false,
-        signAsCmtSgb: false
+        signAsCmtSgb: false,
+        manageStations: false,
+        manageVehicles: false,
+        manageUsers: false,
+        manageItems: false,
+        manageImages: false,
+        manageStyle: false,
+        manageDatabase: false,
+        manageLogs: false
       } 
     });
     setEditingUserId(null);
@@ -796,9 +876,30 @@ export const Settings: React.FC<SettingsProps> = ({
 
   const handleAddStation = () => {
     if (!newStation.name.trim() || !newStation.sgbId) return;
-    const station = { id: crypto.randomUUID(), ...newStation };
-    setLocalSettings({ ...localSettings, stations: [...(localSettings.stations || []), station] });
+    
+    if (editingStationId) {
+      setLocalSettings({
+        ...localSettings,
+        stations: (localSettings.stations || []).map(s => 
+          s.id === editingStationId ? { ...newStation, id: editingStationId } : s
+        )
+      });
+      setEditingStationId(null);
+    } else {
+      const station = { id: crypto.randomUUID(), ...newStation };
+      setLocalSettings({ ...localSettings, stations: [...(localSettings.stations || []), station] });
+    }
     setNewStation({ name: '', sgbId: '' });
+  };
+
+  const handleStartEditStation = (s: any) => {
+    setNewStation({ name: s.name, sgbId: s.sgbId });
+    setEditingStationId(s.id);
+  };
+
+  const cancelEditStation = () => {
+    setNewStation({ name: '', sgbId: '' });
+    setEditingStationId(null);
   };
 
   const handleRemoveStation = (id: string) => {
@@ -861,7 +962,10 @@ export const Settings: React.FC<SettingsProps> = ({
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => setLocalSettings({ ...localSettings, [key]: reader.result as string });
+      reader.onloadend = async () => {
+        const compressed = await compressImage(reader.result as string, 400, 400, 0.7);
+        setLocalSettings({ ...localSettings, [key]: compressed });
+      };
       reader.readAsDataURL(file);
     }
   };
@@ -869,11 +973,10 @@ export const Settings: React.FC<SettingsProps> = ({
   // Função disparada ao trocar abas
   const handleTabChange = (tabId: typeof activeTab) => {
     setActiveTab(tabId);
-    onTabChange?.(tabId);
   };
 
   const handleAddUser = () => {
-    if (!localUserForm.username || !localUserForm.password || !localUserForm.name) {
+    if (!localUserForm.username || !localUserForm.password || !localUserForm.password.trim() || !localUserForm.name) {
       alert('Preencha usuário, senha e nome');
       return;
     }
@@ -888,40 +991,55 @@ export const Settings: React.FC<SettingsProps> = ({
       return;
     }
     
+    const isCavalieri = currentUser?.username?.toLowerCase() === 'cavalieri';
+    const restrictedPerms = ['viewAudit', 'manageLogs', 'manageDatabase', 'manageReportEditor'];
+    
+    // Validar permissões: usuário não pode dar o que não tem
+    const validatedPermissions = { ...localUserForm.permissions } as UserPermissions;
+    Object.keys(validatedPermissions).forEach(key => {
+      const k = key as keyof UserPermissions;
+      if (validatedPermissions[k]) {
+        const hasPermission = currentUser?.permissions?.admin || !!currentUser?.permissions?.[k];
+        const canGrant = isCavalieri || (hasPermission && !restrictedPerms.includes(k as string));
+        if (!canGrant) validatedPermissions[k] = false;
+      }
+    });
+
     const newUser: User = {
       id: crypto.randomUUID(),
       username: localUserForm.username.toLowerCase(),
       email: localUserForm.email?.toLowerCase(),
-      password: localUserForm.password,
+      password: localUserForm.password.trim(),
       name: localUserForm.name,
       rank: localUserForm.rank,
-      permissions: localUserForm.permissions || {
-        checklist: true,
-        reports: true,
-        settings: false,
-        admin: false
-      }
+      forcePasswordChange: localUserForm.forcePasswordChange,
+      permissions: validatedPermissions
     };
     
-    setLocalSettings({
+    const updatedSettings = {
       ...localSettings,
       users: [...(localSettings.users || []), newUser]
-    });
+    };
+    setLocalSettings(updatedSettings);
+    onSave(updatedSettings);
+
     setLocalUserForm({ 
       username: '', 
       email: '',
       password: '', 
       name: '', 
       rank: '', 
+      forcePasswordChange: false,
       permissions: { checklist: true, reports: false, settings: false, admin: false } 
     });
+    setShowUserFormPassword(false);
     setIsAddingLocalUser(false);
-    alert('Usuário cadastrado com sucesso! Lembre-se de clicar em "Aplicar Ajustes" para salvar permanentemente.');
+    alert('Usuário cadastrado com sucesso!');
   };
 
   const handleUpdateLocalUser = () => {
-    if (!editingLocalUser || !localUserForm.username || !localUserForm.password || !localUserForm.name) {
-      alert('Preencha usuário, senha e nome');
+    if (!editingLocalUser || !localUserForm.username || !localUserForm.name) {
+      alert('Preencha usuário e nome');
       return;
     }
 
@@ -930,22 +1048,49 @@ export const Settings: React.FC<SettingsProps> = ({
       return;
     }
 
+    const isCavalieri = currentUser?.username?.toLowerCase() === 'cavalieri';
+    const restrictedPerms = ['viewAudit', 'manageLogs', 'manageDatabase', 'manageReportEditor'];
+
+    // Se informou nova senha, atualiza; senão, mantém a senha atual do usuário intacta
+    const newPassword = (localUserForm.password && localUserForm.password.trim() !== '')
+      ? localUserForm.password.trim()
+      : editingLocalUser.password;
+
     const updatedUsers: User[] = (localSettings.users || []).map(u => {
       if (u.id === editingLocalUser.id) {
+        // Validar permissões na edição
+        const validatedPermissions = { ...(localUserForm.permissions || u.permissions) } as UserPermissions;
+        
+        // Se não for Cavalieri editando, aplicamos restrições estritas
+        if (!isCavalieri) {
+          Object.keys(validatedPermissions).forEach(key => {
+            const k = key as keyof UserPermissions;
+            if (validatedPermissions[k]) {
+              const hasPermission = currentUser?.permissions?.admin || !!currentUser?.permissions?.[k];
+              const canGrant = hasPermission && !restrictedPerms.includes(k as string);
+              if (!canGrant) validatedPermissions[k] = false;
+            }
+          });
+        }
+
         return {
           ...u,
           username: localUserForm.username!.toLowerCase(),
           email: localUserForm.email?.toLowerCase(),
-          password: localUserForm.password!,
+          password: newPassword,
           name: localUserForm.name!,
           rank: localUserForm.rank,
-          permissions: localUserForm.permissions || u.permissions
+          forcePasswordChange: localUserForm.forcePasswordChange,
+          permissions: validatedPermissions
         };
       }
       return u;
     });
 
-    setLocalSettings({ ...localSettings, users: updatedUsers });
+    const updatedSettings = { ...localSettings, users: updatedUsers };
+    setLocalSettings(updatedSettings);
+    onSave(updatedSettings);
+
     setEditingLocalUser(null);
     setLocalUserForm({ 
       username: '', 
@@ -953,8 +1098,11 @@ export const Settings: React.FC<SettingsProps> = ({
       password: '', 
       name: '', 
       rank: '', 
+      forcePasswordChange: false,
       permissions: { checklist: true, reports: false, settings: false, admin: false } 
     });
+    setShowUserFormPassword(false);
+    setIsAddingLocalUser(false);
     alert('Dados do usuário atualizados com sucesso!');
   };
 
@@ -963,11 +1111,13 @@ export const Settings: React.FC<SettingsProps> = ({
     setLocalUserForm({
       username: u.username,
       email: u.email || '',
-      password: u.password || '',
+      password: '', // A senha atual NUNCA deve aparecer
       name: u.name,
       rank: u.rank || '',
+      forcePasswordChange: u.forcePasswordChange || false,
       permissions: u.permissions
     });
+    setShowUserFormPassword(false);
     setIsAddingLocalUser(true); // Re-use the same form area
   };
 
@@ -979,11 +1129,62 @@ export const Settings: React.FC<SettingsProps> = ({
     
     if (window.confirm(`Tem certeza que deseja excluir o usuário "${username}"?`)) {
       const filteredUsers = (localSettings.users || []).filter(u => u.id !== id);
-      setLocalSettings({
+      const updatedSettings = {
         ...localSettings,
         users: filteredUsers
-      });
+      };
+      setLocalSettings(updatedSettings);
+      onSave(updatedSettings);
     }
+  };
+
+  const handleOpenQuickPassword = (u: User) => {
+    setQuickPasswordModalUser(u);
+    setQuickNewPassword('');
+    setQuickConfirmPassword('');
+    setQuickForceChange(u.forcePasswordChange || false);
+    setShowQuickNewPassword(false);
+  };
+
+  const handleSaveQuickPassword = () => {
+    if (!quickPasswordModalUser) return;
+    
+    const trimmedPass = quickNewPassword.trim();
+    if (!trimmedPass) {
+      alert('Informe a nova senha do usuário.');
+      return;
+    }
+
+    if (trimmedPass !== quickConfirmPassword.trim()) {
+      alert('A confirmação não coincide com a nova senha digitada.');
+      return;
+    }
+
+    const updatedUsers: User[] = (localSettings.users || []).map(user => {
+      if (user.id === quickPasswordModalUser.id) {
+        return {
+          ...user,
+          password: trimmedPass,
+          forcePasswordChange: quickForceChange
+        };
+      }
+      return user;
+    });
+
+    const updatedSettings = {
+      ...localSettings,
+      users: updatedUsers
+    };
+
+    setLocalSettings(updatedSettings);
+    onSave(updatedSettings);
+
+    const userName = quickPasswordModalUser.name || quickPasswordModalUser.username;
+    setQuickPasswordModalUser(null);
+    setQuickNewPassword('');
+    setQuickConfirmPassword('');
+    setShowQuickNewPassword(false);
+    alert(`Senha do usuário "${userName}" alterada e salva com sucesso!`);
   };
 
   return (
@@ -1033,15 +1234,33 @@ export const Settings: React.FC<SettingsProps> = ({
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h3 className="text-xl font-black text-gray-900 uppercase">Gestão de Lançamentos (Mestre)</h3>
-                <p className="text-xs text-gray-500 font-bold">Listagem completa e exclusão de checklists do banco de dados.</p>
+                <p className="text-xs text-gray-500 font-bold">Listagem e exclusão de checklists ({logs.length} registros exibidos).</p>
               </div>
-              <button 
-                onClick={() => fetchLogs()} 
-                className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-600 px-4 py-2 rounded-xl text-xs font-black transition-all"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLogs ? 'animate-spin' : ''}`} />
-                Atualizar Lista
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button 
+                  type="button"
+                  onClick={() => fetchLogs()} 
+                  className="flex items-center gap-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-3 py-2 rounded-xl text-xs font-black transition-all"
+                  title="Exibir no máximo os últimos 30 dias para máxima rapidez"
+                >
+                  Últimos 30 Dias
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => fetchLogs(undefined, 'all')} 
+                  className="flex items-center gap-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-3 py-2 rounded-xl text-xs font-black transition-all"
+                  title="Carregar todos os lançamentos históricos da planilha"
+                >
+                  Histórico Completo
+                </button>
+                <button 
+                  onClick={() => fetchLogs()} 
+                  className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-600 px-4 py-2 rounded-xl text-xs font-black transition-all"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLogs ? 'animate-spin' : ''}`} />
+                  Atualizar
+                </button>
+              </div>
             </div>
 
             <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl flex items-start gap-3">
@@ -1069,8 +1288,8 @@ export const Settings: React.FC<SettingsProps> = ({
                       <td colSpan={5} className="px-4 py-12 text-center text-gray-400 font-black uppercase tracking-widest">Nenhum lançamento encontrado</td>
                     </tr>
                   ) : (
-                    logs.map((log) => (
-                      <tr key={log.id} className="hover:bg-white transition-colors">
+                    logs.map((log, lIdx) => (
+                      <tr key={`${log.id}-${lIdx}`} className="hover:bg-white transition-colors">
                         <td className="px-4 py-3 whitespace-nowrap">{new Date(log.date).toLocaleString('pt-BR')}</td>
                         <td className="px-4 py-3 font-black text-blue-600">{log.prefix}</td>
                         <td className="px-4 py-3"><span className="px-2 py-1 bg-gray-100 rounded-md text-[10px] font-black uppercase">{log.checklistType}</span></td>
@@ -1210,6 +1429,62 @@ export const Settings: React.FC<SettingsProps> = ({
                         </div>
                       </li>
                     </ul>
+                  </div>
+                </section>
+
+                {/* 5. NOVAS FUNCIONALIDADES */}
+                <section className="space-y-4">
+                  <div className="flex items-center gap-3 border-b border-gray-100 pb-2">
+                    <div className="bg-green-600 text-white w-10 h-10 rounded-2xl flex items-center justify-center font-black shadow-lg shadow-green-100">05</div>
+                    <h4 className="text-sm font-black uppercase text-gray-900">Novas Funcionalidades</h4>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100">
+                      <h5 className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Gestão de Postos e SGB</h5>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">Agora é possível editar postos existentes e vinculá-los a um Subgrupamento (SGB) específico, facilitando a organização hierárquica da frota.</p>
+                    </div>
+                    <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100">
+                      <h5 className="text-[10px] font-black text-orange-600 uppercase tracking-widest mb-1">Customização Visual</h5>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">A tela inicial pode ser personalizada com uma imagem de fundo de sua escolha, permitindo uma identidade visual própria para cada unidade.</p>
+                    </div>
+                  </div>
+                </section>
+
+                {/* 6. RELATÓRIOS E ESTATÍSTICAS */}
+                <section className="space-y-4">
+                  <div className="flex items-center gap-3 border-b border-gray-100 pb-2">
+                    <div className="bg-indigo-600 text-white w-10 h-10 rounded-2xl flex items-center justify-center font-black shadow-lg shadow-indigo-100">06</div>
+                    <h4 className="text-sm font-black uppercase text-gray-900">Relatórios e Estatísticas</h4>
+                  </div>
+                  <div className="bg-gray-900 p-8 rounded-[2.5rem] text-white">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                       <div className="space-y-3">
+                          <h5 className="text-xs font-black uppercase text-indigo-400 tracking-widest flex items-center gap-2"><BarChart3 className="w-4 h-4"/> KM Rodado Mensal</h5>
+                          <p className="text-xs text-gray-300 font-medium leading-loose">Acesse relatórios detalhados de KM rodado por mês ou ano. Filtre por SGB, Posto ou visualize a frota completa com distribuição estatística por viatura.</p>
+                       </div>
+                       <div className="space-y-3">
+                          <h5 className="text-xs font-black uppercase text-indigo-400 tracking-widest flex items-center gap-2"><PieChart className="w-4 h-4"/> Comparativo Geral</h5>
+                          <p className="text-xs text-gray-300 font-medium leading-loose">Compare o desempenho entre postos e SGBs, identificando quais unidades e viaturas (UR, ABS, etc.) possuem maior volume de rodagem no período selecionado.</p>
+                       </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* 7. PERMISSÕES E HIERARQUIA */}
+                <section className="space-y-4">
+                  <div className="flex items-center gap-3 border-b border-gray-100 pb-2">
+                    <div className="bg-rose-600 text-white w-10 h-10 rounded-2xl flex items-center justify-center font-black shadow-lg shadow-rose-100">07</div>
+                    <h4 className="text-sm font-black uppercase text-gray-900">Permissões e Hierarquia</h4>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100">
+                      <h5 className="text-[10px] font-black text-rose-600 uppercase tracking-widest mb-1">Controle de Acesso Granular</h5>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">As permissões agora são definidas tela a tela e relatório a relatório. Administradores podem restringir acesso a Postos, Viaturas, Itens e selecionar individualmente quais relatórios cada usuário pode gerar.</p>
+                    </div>
+                    <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100">
+                      <h5 className="text-[10px] font-black text-rose-600 uppercase tracking-widest mb-1">Restrições de Segurança</h5>
+                      <p className="text-xs text-gray-600 leading-relaxed font-medium">Um usuário com permissão de editar outros não pode conceder permissões que ele próprio não possua. Telas sensíveis como Nuvem, Auditoria e Editor de Relatórios são exclusivas do super usuário.</p>
+                    </div>
                   </div>
                 </section>
               </div>
@@ -1488,7 +1763,16 @@ export const Settings: React.FC<SettingsProps> = ({
                   })}
                 </select>
                 <input type="text" placeholder="Nome do Posto (Ex: PB Central)" value={newStation.name} onChange={e => setNewStation({...newStation, name: e.target.value.toUpperCase()})} className="md:col-span-1 border rounded-xl px-4 py-2 text-xs font-bold" />
-                <button onClick={handleAddStation} className="bg-blue-600 text-white p-2 rounded-xl hover:bg-blue-700 transition-all flex justify-center items-center"><Plus className="w-6 h-6" /></button>
+                <div className="flex gap-1">
+                  <button onClick={handleAddStation} className={`flex-1 ${editingStationId ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'} text-white p-2 rounded-xl transition-all flex justify-center items-center font-bold text-[10px] uppercase gap-1`}>
+                    {editingStationId ? <><Save className="w-4 h-4" /> Salvar</> : <><Plus className="w-6 h-6" /></>}
+                  </button>
+                  {editingStationId && (
+                    <button onClick={cancelEditStation} className="bg-gray-200 text-gray-600 p-2 rounded-xl hover:bg-gray-300 transition-all flex items-center justify-center font-bold text-[10px] uppercase">
+                      Sair
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="max-h-[300px] overflow-y-auto divide-y border rounded-2xl">
                 {(localSettings.stations || []).length === 0 && <p className="p-10 text-center text-xs text-gray-400 font-bold uppercase">Nenhum posto cadastrado</p>}
@@ -1501,7 +1785,10 @@ export const Settings: React.FC<SettingsProps> = ({
                         <span className="text-[11px] font-black text-gray-800 uppercase">{s.name}</span>
                         <span className="text-[9px] font-bold text-gray-400 uppercase">{gb?.name} / {sgb?.name}</span>
                       </div>
-                      <button onClick={() => handleRemoveStation(s.id)} className="text-red-400 hover:text-red-600 p-2"><Trash2 className="w-4 h-4" /></button>
+                      <div className="flex gap-1">
+                        <button onClick={() => handleStartEditStation(s)} className="text-blue-400 hover:text-blue-600 p-2 transition-all" title="Editar Posto"><Edit2 className="w-4 h-4" /></button>
+                        <button onClick={() => handleRemoveStation(s.id)} className="text-red-400 hover:text-red-600 p-2 transition-all" title="Excluir Posto"><Trash2 className="w-4 h-4" /></button>
+                      </div>
                     </div>
                   );
                 })}
@@ -1546,8 +1833,8 @@ export const Settings: React.FC<SettingsProps> = ({
             
             <div className="max-h-[400px] overflow-y-auto divide-y border rounded-2xl">
               {(localSettings.vehicles || []).length === 0 && <p className="p-10 text-center text-xs text-gray-400 font-bold uppercase">Nenhuma viatura cadastrada</p>}
-              {(localSettings.vehicles || []).map(v => (
-                <div key={v.id} className="p-3 flex items-center justify-between hover:bg-gray-50 group">
+              {(localSettings.vehicles || []).map((v, vIdx) => (
+                <div key={`${v.id || v.prefix}-${vIdx}`} className="p-3 flex items-center justify-between hover:bg-gray-50 group">
                   <div className="grid grid-cols-4 flex-1 gap-4 items-center">
                     <span className="text-[11px] font-black text-gray-800">{v.prefix}</span>
                     <span className="text-[11px] font-mono text-gray-600">{v.plate}</span>
@@ -1619,7 +1906,7 @@ export const Settings: React.FC<SettingsProps> = ({
               {localSettings.defaultItems
                 .filter(item => itemsFilter === 'all' || item.vehicleTypes?.includes(itemsFilter))
                 .map((item, idx) => (
-                <div key={item.id} className="p-3 flex items-center justify-between hover:bg-gray-50 transition-colors gap-3">
+                <div key={`${item.id}-${idx}`} className="p-3 flex items-center justify-between hover:bg-gray-50 transition-colors gap-3">
                   <div className="flex flex-col gap-1">
                     <div className="flex items-center gap-1">
                       <button onClick={() => moveItem(idx, 'up')} className="p-1 hover:bg-gray-200 rounded text-gray-400 hover:text-blue-600"><ChevronUp className="w-3 h-3" /></button>
@@ -1661,6 +1948,19 @@ export const Settings: React.FC<SettingsProps> = ({
               )}
             </div>
 
+            {!isAddingLocalUser && (
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input 
+                  type="text" 
+                  placeholder="PESQUISAR USUÁRIO POR NOME OU RE..." 
+                  value={searchTermUsers}
+                  onChange={e => setSearchTermUsers(e.target.value.toUpperCase())}
+                  className="w-full bg-gray-50 border-none rounded-xl pl-9 pr-4 py-2.5 text-[10px] font-black uppercase outline-none focus:ring-2 focus:ring-blue-100 transition-all"
+                />
+              </div>
+            )}
+
             {isAddingLocalUser && (
               <div className="bg-blue-50 border border-blue-100 p-6 rounded-3xl space-y-4">
                 <div className="flex items-center justify-between mb-2">
@@ -1682,14 +1982,26 @@ export const Settings: React.FC<SettingsProps> = ({
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Senha</label>
-                    <input 
-                      type="text" 
-                      value={localUserForm.password} 
-                      onChange={e => setLocalUserForm({...localUserForm, password: e.target.value})} 
-                      placeholder="••••••••" 
-                      className="w-full bg-white border rounded-2xl p-3 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" 
-                    />
+                    <label className="text-[10px] font-black text-gray-500 uppercase ml-1">
+                      {editingLocalUser ? 'Nova Senha (opcional)' : 'Senha'}
+                    </label>
+                    <div className="relative">
+                      <input 
+                        type={showUserFormPassword ? "text" : "password"} 
+                        value={localUserForm.password} 
+                        onChange={e => setLocalUserForm({...localUserForm, password: e.target.value})} 
+                        placeholder={editingLocalUser ? "Deixe em branco p/ manter atual" : "••••••••"} 
+                        className="w-full bg-white border rounded-2xl p-3 pr-10 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" 
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowUserFormPassword(!showUserFormPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                        title={showUserFormPassword ? "Ocultar senha" : "Ver senha digitada"}
+                      >
+                        {showUserFormPassword ? <EyeOff className="w-4 h-4" /> : <ViewIcon className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-1">
                     <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Gmail (Login OAuth)</label>
@@ -1721,38 +2033,248 @@ export const Settings: React.FC<SettingsProps> = ({
                       className="w-full bg-white border rounded-2xl p-3 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500" 
                     />
                   </div>
-                  <div className="space-y-4 border-t pt-4">
-                    <h5 className="text-[10px] font-black text-gray-500 uppercase flex items-center gap-1">Permissões de Acesso</h5>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                      {[
-                        { id: 'checklist', label: 'Checklist' },
-                        { id: 'reports', label: 'Relatórios' },
-                        { id: 'manageStations', label: 'Postos' },
-                        { id: 'manageVehicles', label: 'Viaturas' },
-                        { id: 'manageUsers', label: 'Usuários' },
-                        { id: 'manageItems', label: 'Itens' },
-                        { id: 'manageImages', label: 'Plantas' },
-                        { id: 'manageStyle', label: 'Estilo' },
-                        { id: 'viewAudit', label: 'Auditoria' },
-                        { id: 'manageLogs', label: 'Gestão Lanç.' },
-                        { id: 'manageDatabase', label: 'Nuvem' },
-                      ].map((perm) => (
-                        <label key={perm.id} className="flex items-center gap-2 p-2 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                          <input 
-                            type="checkbox" 
-                            checked={localUserForm.permissions?.[perm.id as keyof UserPermissions] || false} 
-                            onChange={e => setLocalUserForm({
-                              ...localUserForm, 
-                              permissions: {
-                                ...localUserForm.permissions!, 
-                                [perm.id]: e.target.checked
-                              }
-                            })}
-                            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
-                          />
-                          <span className="text-[9px] font-black uppercase text-gray-600">{perm.label}</span>
-                        </label>
-                      ))}
+                  <div className="space-y-1 md:col-span-1 flex items-center pt-5">
+                    <label className="flex items-center gap-2 cursor-pointer p-3 bg-white border rounded-2xl w-full hover:bg-blue-100 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        checked={localUserForm.forcePasswordChange || false} 
+                        onChange={e => setLocalUserForm({...localUserForm, forcePasswordChange: e.target.checked})} 
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                      />
+                      <span className="text-[10px] font-black uppercase text-gray-700">Trocar senha no próximo login</span>
+                    </label>
+                  </div>
+                  <div className="space-y-6 border-t pt-4 md:col-span-4">
+                    <h5 className="text-[10px] font-black text-gray-500 uppercase flex items-center gap-1">Configurações de Permissões</h5>
+                    
+                    <div className="space-y-4">
+                      {/* Grupo 0: Permissões de Administração Mestre */}
+                      <div className="space-y-2">
+                        <p className="text-[9px] font-black text-red-600 uppercase tracking-widest ml-1">Administração Mestre</p>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {[
+                            { id: 'admin', label: 'Admin Geral' },
+                            { id: 'settings', label: 'Acesso Ajustes' },
+                          ].map((perm) => {
+                            const canEdit = currentUser?.username?.toUpperCase() === 'CAVALIERI';
+                            
+                            return (
+                            <label key={perm.id} className={`flex items-center gap-2 p-2 border rounded-xl transition-colors ${canEdit ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                              <input 
+                                type="checkbox" 
+                                disabled={!canEdit}
+                                checked={localUserForm.permissions?.[perm.id as keyof UserPermissions] || false} 
+                                onChange={e => setLocalUserForm({
+                                  ...localUserForm, 
+                                  permissions: {
+                                    ...localUserForm.permissions!, 
+                                    [perm.id]: e.target.checked
+                                  }
+                                })}
+                                className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500" 
+                              />
+                              <span className={`text-[9px] font-black uppercase ${canEdit ? 'text-red-600' : 'text-gray-600'}`}>{perm.label}</span>
+                            </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Grupo 1: Módulos de Acesso */}
+                      <div className="space-y-2">
+                        <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest ml-1">Módulos de Acesso</p>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {[
+                            { id: 'checklist', label: 'Checklist' },
+                            { id: 'reports', label: 'Relatórios' },
+                          ].map((perm) => {
+                            const isCavalieri = currentUser?.username?.toLowerCase() === 'cavalieri';
+                            const hasPermission = currentUser?.permissions?.admin || !!currentUser?.permissions?.[perm.id as keyof UserPermissions];
+                            const canEdit = isCavalieri || hasPermission;
+
+                            return (
+                            <label key={perm.id} className={`flex items-center gap-2 p-2 border rounded-xl transition-colors ${canEdit ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                              <input 
+                                type="checkbox" 
+                                disabled={!canEdit}
+                                checked={localUserForm.permissions?.[perm.id as keyof UserPermissions] || false} 
+                                onChange={e => setLocalUserForm({
+                                  ...localUserForm, 
+                                  permissions: {
+                                    ...localUserForm.permissions!, 
+                                    [perm.id]: e.target.checked
+                                  }
+                                })}
+                                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                              />
+                              <span className={`text-[9px] font-black uppercase ${canEdit ? 'text-gray-600' : 'text-gray-400'}`}>{perm.label}</span>
+                            </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Grupo 2: Gestão Administrativa */}
+                      <div className="space-y-2">
+                        <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest ml-1">Gestão Administrativa</p>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {[
+                            { id: 'manageStations', label: 'Postos' },
+                            { id: 'manageVehicles', label: 'Viaturas' },
+                            { id: 'manageUsers', label: 'Usuários' },
+                            { id: 'manageItems', label: 'Itens' },
+                          ].map((perm) => {
+                            const isCavalieri = currentUser?.username?.toLowerCase() === 'cavalieri';
+                            const hasPermission = currentUser?.permissions?.admin || !!currentUser?.permissions?.[perm.id as keyof UserPermissions];
+                            const canEdit = isCavalieri || hasPermission;
+
+                            return (
+                            <label key={perm.id} className={`flex items-center gap-2 p-2 border rounded-xl transition-colors ${canEdit ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                              <input 
+                                type="checkbox" 
+                                disabled={!canEdit}
+                                checked={localUserForm.permissions?.[perm.id as keyof UserPermissions] || false} 
+                                onChange={e => setLocalUserForm({
+                                  ...localUserForm, 
+                                  permissions: {
+                                    ...localUserForm.permissions!, 
+                                    [perm.id]: e.target.checked
+                                  }
+                                })}
+                                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                              />
+                              <span className={`text-[9px] font-black uppercase ${canEdit ? 'text-gray-600' : 'text-gray-400'}`}>{perm.label}</span>
+                            </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Grupo 3: Sistema e Auditoria */}
+                      <div className="space-y-2">
+                        <p className="text-[9px] font-black text-amber-500 uppercase tracking-widest ml-1">Sistema e Auditoria</p>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {[
+                            { id: 'manageImages', label: 'Plantas' },
+                            { id: 'manageStyle', label: 'Estilo' },
+                            { id: 'viewAudit', label: 'Auditoria' },
+                            { id: 'manageLogs', label: 'Gestão Lanç.' },
+                            { id: 'manageDatabase', label: 'Nuvem' },
+                            { id: 'manageReportEditor', label: 'Editor Relat.' },
+                          ].map((perm) => {
+                            const isCavalieri = currentUser?.username?.toLowerCase() === 'cavalieri';
+                            const isRestricted = ['viewAudit', 'manageLogs', 'manageDatabase', 'manageReportEditor'].includes(perm.id);
+                            
+                            // Regra: Somente Cavalieri pode conceder permissões restritas.
+                            // Para as demais, o usuário deve possuir a permissão para concedê-la.
+                            const hasPermission = currentUser?.permissions?.admin || !!currentUser?.permissions?.[perm.id as keyof UserPermissions];
+                            const canEdit = isCavalieri || (hasPermission && !isRestricted);
+                            
+                            return (
+                            <label key={perm.id} className={`flex items-center gap-2 p-2 border rounded-xl transition-colors ${canEdit ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                              <input 
+                                type="checkbox" 
+                                disabled={!canEdit}
+                                checked={localUserForm.permissions?.[perm.id as keyof UserPermissions] || false} 
+                                onChange={e => setLocalUserForm({
+                                  ...localUserForm, 
+                                  permissions: {
+                                    ...localUserForm.permissions!, 
+                                    [perm.id]: e.target.checked
+                                  }
+                                })}
+                                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                              />
+                              <span className={`text-[9px] font-black uppercase ${isRestricted && canEdit ? 'text-amber-600' : canEdit ? 'text-gray-600' : 'text-gray-400'}`}>{perm.label}</span>
+                            </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Grupo 4: Assinaturas Digitais */}
+                      <div className="space-y-2">
+                        <p className="text-[9px] font-black text-green-500 uppercase tracking-widest ml-1">Assinaturas e Autoridade</p>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {[
+                            { id: 'canSign', label: 'Assinar Doc' },
+                            { id: 'signAsChefeMotoristas', label: 'Ch. Motoristas' },
+                            { id: 'signAsCmtProntidao', label: 'CMT Prontidão' },
+                            { id: 'signAsCmtPosto', label: 'CMT Posto' },
+                            { id: 'signAsCmtSgb', label: 'CMT SGB' }
+                          ].map((perm) => {
+                            const isCavalieri = currentUser?.username?.toLowerCase() === 'cavalieri';
+                            const hasPermission = currentUser?.permissions?.admin || !!currentUser?.permissions?.[perm.id as keyof UserPermissions];
+                            const canEdit = isCavalieri || hasPermission;
+
+                            return (
+                            <label key={perm.id} className={`flex items-center gap-2 p-2 border rounded-xl transition-colors ${canEdit ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                              <input 
+                                type="checkbox" 
+                                disabled={!canEdit}
+                                checked={localUserForm.permissions?.[perm.id as keyof UserPermissions] || false} 
+                                onChange={e => setLocalUserForm({
+                                  ...localUserForm, 
+                                  permissions: {
+                                    ...localUserForm.permissions!, 
+                                    [perm.id]: e.target.checked
+                                  }
+                                })}
+                                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                              />
+                              <span className={`text-[9px] font-black uppercase ${canEdit ? 'text-gray-600' : 'text-gray-400'}`}>{perm.label}</span>
+                            </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Grupo 5: Permissões de Relatórios Específicos */}
+                      <div className="space-y-2">
+                        <p className="text-[9px] font-black text-rose-500 uppercase tracking-widest ml-1">Relatórios Autorizados</p>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {[
+                            { id: 'reportNovelties', label: 'Alterações' },
+                            { id: 'reportSynthetic', label: 'Sintético' },
+                            { id: 'reportAnalytical', label: 'Analítico' },
+                            { id: 'reportFull', label: 'Completo' },
+                            { id: 'reportMonthlyGrouped', label: 'Agrup. Mensal' },
+                            { id: 'reportHistory', label: 'Histórico' },
+                            { id: 'reportDailyControl', label: 'Controle Diário' },
+                            { id: 'reportDailyControlMotos', label: 'Diário Motos' },
+                            { id: 'reportWeeklyLeves', label: 'Semanal Leves' },
+                            { id: 'reportWeeklyMotos', label: 'Semanal Motos' },
+                            { id: 'reportWeeklyAb', label: 'Semanal AB' },
+                            { id: 'reportRetroactiveLogs', label: 'Lanç. Retroat.' },
+                            { id: 'reportFinalMonthlyBook', label: 'Livro Mensal' },
+                            { id: 'reportFleetDashboard', label: 'Dashboard' },
+                            { id: 'reportKmMonthly', label: 'KM Mensal' },
+                          ].map((perm) => {
+                            const isCavalieri = currentUser?.username?.toLowerCase() === 'cavalieri';
+                            const hasPermission = currentUser?.permissions?.admin || !!currentUser?.permissions?.[perm.id as keyof UserPermissions];
+                            const canEdit = isCavalieri || hasPermission;
+
+                            return (
+                            <label key={perm.id} className={`flex items-center gap-2 p-2 border rounded-xl transition-colors ${canEdit ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                              <input 
+                                type="checkbox" 
+                                disabled={!canEdit}
+                                checked={localUserForm.permissions?.[perm.id as keyof UserPermissions] || false} 
+                                onChange={e => setLocalUserForm({
+                                  ...localUserForm, 
+                                  permissions: {
+                                    ...localUserForm.permissions!, 
+                                    [perm.id]: e.target.checked
+                                  }
+                                })}
+                                className="w-4 h-4 rounded border-gray-300 text-rose-600 focus:ring-rose-500" 
+                              />
+                              <span className={`text-[9px] font-black uppercase ${canEdit ? 'text-gray-600' : 'text-gray-400'}`}>{perm.label}</span>
+                            </label>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1768,7 +2290,14 @@ export const Settings: React.FC<SettingsProps> = ({
             )}
 
             <div className="grid grid-cols-1 gap-3">
-              {(localSettings.users || []).map(u => (
+              {(localSettings.users || [])
+                .filter(u => 
+                   !searchTermUsers || 
+                   u.username?.toUpperCase().includes(searchTermUsers) || 
+                   u.name?.toUpperCase().includes(searchTermUsers) ||
+                   u.rank?.toUpperCase().includes(searchTermUsers)
+                )
+                .map(u => (
                 <div key={u.id} className="bg-gray-50 border rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 bg-white border rounded-xl flex items-center justify-center font-black text-blue-600 text-xs">
@@ -1779,54 +2308,108 @@ export const Settings: React.FC<SettingsProps> = ({
                         {u.rank ? `${u.rank} ` : ''}{u.name || u.username}
                       </h4>
                       <p className="text-[10px] font-bold text-gray-400">@ {u.username} • Senha: ••••••••</p>
+                      {u.forcePasswordChange && (
+                        <div className="mt-1 flex items-center gap-1 text-[8px] font-black uppercase text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 w-fit">
+                          <Key className="w-2.5 h-2.5" /> Trocar senha pendente
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      { id: 'checklist', label: 'Checklist', icon: ClipboardCheck },
-                      { id: 'reports', label: 'Relatórios', icon: FileSearch },
-                      { id: 'manageStations', label: 'Postos', icon: Navigation },
-                      { id: 'manageVehicles', label: 'Viaturas', icon: Car },
-                      { id: 'manageUsers', label: 'Usuários', icon: Users },
-                      { id: 'manageItems', label: 'Itens', icon: ListChecks },
-                      { id: 'manageImages', label: 'Plantas', icon: ImageIcon },
-                      { id: 'manageStyle', label: 'Estilo', icon: Palette },
-                      { id: 'viewAudit', label: 'Auditoria', icon: ShieldAlert },
-                      { id: 'manageLogs', label: 'Gestão Lanç.', icon: Database },
-                      { id: 'manageDatabase', label: 'Nuvem', icon: Cloud },
-                      { id: 'canSign', label: 'Assinar Doc', icon: ShieldCheck },
-                      { id: 'signAsChefeMotoristas', label: 'Ch. Motoristas', icon: UserCheck },
-                      { id: 'signAsCmtProntidao', label: 'CMT Prontidão', icon: UserCheck },
-                      { id: 'signAsCmtPosto', label: 'CMT Posto', icon: UserCheck },
-                      { id: 'signAsCmtSgb', label: 'CMT SGB', icon: UserCheck }
-                    ].map((perm: any) => {
-                      const hasPerm = (u.permissions as any)[perm.id];
-                      return (
-                        <button 
-                          key={perm.id || perm.key}
-                          onClick={() => {
-                            const newUsers = localSettings.users?.map(user => {
-                              if (user.id === u.id) {
-                                return {
-                                  ...user,
-                                  permissions: {
-                                    ...user.permissions,
-                                    [(perm.key || perm.id)]: !hasPerm
-                                  }
-                                };
-                              }
-                              return user;
-                            });
-                            setLocalSettings({ ...localSettings, users: newUsers });
-                          }}
-                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase border transition-all ${hasPerm ? 'bg-green-50 text-green-600 border-green-200' : 'bg-gray-100 text-gray-400 border-gray-200 opacity-50'}`}
-                        >
-                          <perm.icon className="w-3 h-3" />
-                          {perm.label}
-                        </button>
-                      );
-                    })}
+                  <div className="flex flex-col gap-2 flex-1">
+                    {/* Administração */}
+                    <div className="flex flex-wrap gap-1 items-center">
+                      <span className="text-[7px] font-black text-gray-400 uppercase w-10">Mestre:</span>
+                      {[
+                        { id: 'admin', label: 'Admin', icon: Shield },
+                        { id: 'settings', label: 'Ajustes', icon: SettingsIcon },
+                      ].map((perm: any) => {
+                        const hasPerm = (u.permissions as any)[perm.id];
+                        if (!hasPerm) return null;
+                        return (
+                          <div key={perm.id} className="flex items-center gap-1 px-1.5 py-0.5 bg-red-50 text-red-600 border border-red-100 rounded text-[7px] font-black uppercase">
+                            {perm.label}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Acesso */}
+                    <div className="flex flex-wrap gap-1 items-center">
+                      <span className="text-[7px] font-black text-gray-400 uppercase w-10">Módulos:</span>
+                      {[
+                        { id: 'checklist', label: 'Checklist', icon: ClipboardCheck },
+                        { id: 'reports', label: 'Relatórios', icon: FileSearch },
+                      ].map((perm: any) => {
+                        const hasPerm = (u.permissions as any)[perm.id];
+                        if (!hasPerm) return null;
+                        return (
+                          <div key={perm.id} className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[7px] font-black uppercase">
+                            {perm.label}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Gestão */}
+                    <div className="flex flex-wrap gap-1 items-center">
+                      <span className="text-[7px] font-black text-gray-400 uppercase w-10">Gestão:</span>
+                      {[
+                        { id: 'manageStations', label: 'Postos', icon: Navigation },
+                        { id: 'manageVehicles', label: 'Viaturas', icon: Car },
+                        { id: 'manageUsers', label: 'Usuários', icon: Users },
+                        { id: 'manageItems', label: 'Itens', icon: ListChecks },
+                      ].map((perm: any) => {
+                        const hasPerm = (u.permissions as any)[perm.id];
+                        if (!hasPerm) return null;
+                        return (
+                          <div key={perm.id} className="flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded text-[7px] font-black uppercase">
+                            {perm.label}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Sistema */}
+                    <div className="flex flex-wrap gap-1 items-center">
+                      <span className="text-[7px] font-black text-gray-400 uppercase w-10">Sistema:</span>
+                      {[
+                        { id: 'manageImages', label: 'Plantas', icon: ImageIcon },
+                        { id: 'manageStyle', label: 'Estilo', icon: Palette },
+                        { id: 'viewAudit', label: 'Auditoria', icon: ShieldAlert },
+                        { id: 'manageLogs', label: 'Gestão Lanç.', icon: Database },
+                        { id: 'manageDatabase', label: 'Nuvem', icon: Cloud },
+                        { id: 'manageReportEditor', label: 'Editor Relat.', icon: Edit2 },
+                      ].map((perm: any) => {
+                        const hasPerm = (u.permissions as any)[perm.id];
+                        if (!hasPerm) return null;
+                        return (
+                          <div key={perm.id} className="flex items-center gap-1 px-1.5 py-0.5 bg-amber-50 text-amber-600 border border-amber-100 rounded text-[7px] font-black uppercase">
+                            {perm.label}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Assinaturas */}
+                    <div className="flex flex-wrap gap-1 items-center">
+                      <span className="text-[7px] font-black text-gray-400 uppercase w-10">Assin.:</span>
+                      {[
+                        { id: 'canSign', label: 'Assinar Doc', icon: ShieldCheck },
+                        { id: 'signAsChefeMotoristas', label: 'Ch. Motoristas', icon: UserCheck },
+                        { id: 'signAsCmtProntidao', label: 'CMT Prontidão', icon: UserCheck },
+                        { id: 'signAsCmtPosto', label: 'CMT Posto', icon: UserCheck },
+                        { id: 'signAsCmtSgb', label: 'CMT SGB', icon: UserCheck }
+                      ].map((perm: any) => {
+                        const hasPerm = (u.permissions as any)[perm.id];
+                        if (!hasPerm) return null;
+                        return (
+                          <div key={perm.id} className="flex items-center gap-1 px-1.5 py-0.5 bg-green-50 text-green-600 border border-green-100 rounded text-[7px] font-black uppercase">
+                            {perm.label}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <div className="flex gap-2">
@@ -1838,16 +2421,8 @@ export const Settings: React.FC<SettingsProps> = ({
                       <Edit2 className="w-4 h-4" />
                     </button>
                     <button 
-                      onClick={() => {
-                        const newPass = prompt('Nova senha:', u.password);
-                        if (newPass) {
-                          setLocalSettings({
-                            ...localSettings,
-                            users: localSettings.users?.map(user => user.id === u.id ? { ...user, password: newPass } : user)
-                          });
-                        }
-                      }}
-                      className="p-2 hover:bg-gray-200 rounded-xl text-gray-400 transition-colors"
+                      onClick={() => handleOpenQuickPassword(u)}
+                      className="p-2 hover:bg-blue-50 hover:text-blue-600 rounded-xl text-gray-400 transition-colors"
                       title="Alterar Senha Rápido"
                     >
                       <Key className="w-4 h-4" />
@@ -1897,13 +2472,14 @@ export const Settings: React.FC<SettingsProps> = ({
                     }} className="p-1.5 bg-white border rounded-lg text-gray-400 hover:text-blue-500">
                       {localSettings.vehicleImageRatios?.[idx] === 'landscape' ? <RectangleVertical className="w-4 h-4" /> : <RectangleHorizontal className="w-4 h-4" />}
                     </button>
-                    <label className="p-1.5 bg-blue-600 text-white rounded-lg cursor-pointer hover:bg-blue-700"><Camera className="w-4 h-4" /><input type="file" accept="image/*" className="hidden" onChange={e => {
+                    <label className="p-1.5 bg-blue-600 text-white rounded-lg cursor-pointer hover:bg-blue-700"><Camera className="w-4 h-4" /><input type="file" accept="image/*" className="hidden" onChange={async e => {
                       const file = e.target.files?.[0];
                       if(file) {
                         const r = new FileReader();
-                        r.onloadend = () => {
+                        r.onloadend = async () => {
+                          const compressed = await compressImage(r.result as string, 800, 800, 0.5);
                           const ni = [...localSettings.vehicleImages];
-                          ni[idx] = r.result as string;
+                          ni[idx] = compressed;
                           setLocalSettings({...localSettings, vehicleImages: ni});
                         };
                         r.readAsDataURL(file);
@@ -1932,7 +2508,14 @@ export const Settings: React.FC<SettingsProps> = ({
                   <label className="text-[10px] font-black uppercase text-gray-500">Senha de Acesso aos Ajustes</label>
                   <div className="relative">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                    <input type="text" value={localSettings.settingsPassword || 'cavalieri'} onChange={e => setLocalSettings({...localSettings, settingsPassword: e.target.value})} className="w-full border rounded-xl p-3 pl-10 text-xs font-bold text-red-600" placeholder="Senha mestre (Padrão: cavalieri)" />
+                    <input 
+                      type="password" 
+                      value={localSettings.settingsPassword || ''} 
+                      onChange={e => setLocalSettings({...localSettings, settingsPassword: e.target.value})} 
+                      className="w-full border rounded-xl p-3 pl-10 text-xs font-bold text-gray-800 tracking-widest outline-none focus:border-blue-500 bg-white" 
+                      placeholder="••••••••" 
+                      autoComplete="new-password"
+                    />
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -1942,6 +2525,138 @@ export const Settings: React.FC<SettingsProps> = ({
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase text-gray-500">Cor Institucional</label>
                   <input type="color" value={localSettings.headerBgColor || '#b91c1c'} onChange={e => setLocalSettings({...localSettings, headerBgColor: e.target.value})} className="w-full h-11 p-1 bg-white border rounded-xl cursor-pointer" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-gray-500">Imagem de Fundo (Tela Inicial)</label>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={localSettings.homeBgUrl || ''} 
+                      onChange={e => setLocalSettings({...localSettings, homeBgUrl: e.target.value})} 
+                      className="flex-1 border rounded-xl p-3 text-xs font-bold" 
+                      placeholder="URL da Imagem (Ex: https://...)" 
+                    />
+                    <label className="bg-blue-600 text-white p-3 rounded-xl cursor-pointer hover:bg-blue-700 shadow-sm flex items-center justify-center" title="Enviar Imagem">
+                      <Camera className="w-4 h-4" />
+                      <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = async () => {
+                            const compressed = await compressImage(reader.result as string, 1200, 800, 0.6);
+                            setLocalSettings({ ...localSettings, homeBgUrl: compressed });
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }} />
+                    </label>
+                    {localSettings.homeBgUrl && (
+                      <button onClick={() => setLocalSettings({...localSettings, homeBgUrl: ''})} className="bg-red-50 text-red-600 p-3 rounded-xl hover:bg-red-100 transition-all border border-red-100" title="Remover">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  {localSettings.homeBgUrl && (
+                    <div className="mt-1 flex items-center gap-2 p-2 bg-gray-50 rounded-xl border border-gray-100">
+                      <img src={localSettings.homeBgUrl} alt="Preview Fundo" className="w-8 h-8 object-cover rounded-lg border" />
+                      <span className="text-[10px] font-bold text-gray-500 truncate">Imagem de fundo geral configurada</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-gray-500">Imagem de Início no Login</label>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={localSettings.loginBgUrl || ''} 
+                      onChange={e => setLocalSettings({...localSettings, loginBgUrl: e.target.value})} 
+                      className="flex-1 border rounded-xl p-3 text-xs font-bold" 
+                      placeholder="URL da Imagem do Login (Ex: https://...)" 
+                    />
+                    <label className="bg-blue-600 text-white p-3 rounded-xl cursor-pointer hover:bg-blue-700 shadow-sm flex items-center justify-center" title="Enviar Imagem de Início do Login">
+                      <Camera className="w-4 h-4" />
+                      <input type="file" accept="image/*" className="hidden" onChange={async e => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = async () => {
+                            const compressed = await compressImage(reader.result as string, 1200, 800, 0.6);
+                            setLocalSettings({ ...localSettings, loginBgUrl: compressed });
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }} />
+                    </label>
+                    {localSettings.loginBgUrl && (
+                      <button onClick={() => setLocalSettings({...localSettings, loginBgUrl: ''})} className="bg-red-50 text-red-600 p-3 rounded-xl hover:bg-red-100 transition-all border border-red-100" title="Remover">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  {localSettings.loginBgUrl && (
+                    <div className="mt-1 flex items-center gap-2 p-2 bg-blue-50/50 rounded-xl border border-blue-100">
+                      <img src={localSettings.loginBgUrl} alt="Preview Login" className="w-8 h-8 object-cover rounded-lg border border-blue-200" />
+                      <span className="text-[10px] font-bold text-blue-700 truncate">Imagem de início exibida no login</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-[10px] font-black uppercase text-gray-500 flex items-center gap-1.5">
+                    <Video className="w-3.5 h-3.5 text-blue-600" />
+                    Vídeo no Sistema (Tela Inicial / Login / Fundo)
+                  </label>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={localSettings.homeVideoUrl || ''} 
+                      onChange={e => setLocalSettings({...localSettings, homeVideoUrl: e.target.value})} 
+                      className="flex-1 border rounded-xl p-3 text-xs font-bold" 
+                      placeholder="URL do Vídeo (.mp4, .webm ou link do YouTube: https://www.youtube.com/watch?v=...)" 
+                    />
+                    <label className="bg-indigo-600 text-white p-3 rounded-xl cursor-pointer hover:bg-indigo-700 shadow-sm flex items-center justify-center gap-1.5" title="Enviar Arquivo de Vídeo">
+                      <Film className="w-4 h-4" />
+                      <input 
+                        type="file" 
+                        accept="video/mp4,video/webm,video/ogg,video/quicktime" 
+                        className="hidden" 
+                        onChange={e => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            if (file.size > 25 * 1024 * 1024) {
+                              alert("Vídeo superior a 25MB. Para carregamento mais veloz, recomendamos utilizar link direto ou YouTube.");
+                            }
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              setLocalSettings({ ...localSettings, homeVideoUrl: reader.result as string });
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }} 
+                      />
+                    </label>
+                    {localSettings.homeVideoUrl && (
+                      <button onClick={() => setLocalSettings({...localSettings, homeVideoUrl: ''})} className="bg-red-50 text-red-600 p-3 rounded-xl hover:bg-red-100 transition-all border border-red-100" title="Remover Vídeo">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  {localSettings.homeVideoUrl ? (
+                    <div className="mt-1 flex items-center justify-between p-2.5 bg-indigo-50/60 rounded-xl border border-indigo-100 text-xs">
+                      <div className="flex items-center gap-2 text-indigo-700 font-bold text-[10px]">
+                        <Video className="w-3.5 h-3.5" />
+                        <span>Vídeo ativo no fundo do sistema, tela inicial e login</span>
+                      </div>
+                      <span className="text-[9px] uppercase font-mono px-2 py-0.5 bg-indigo-200/50 text-indigo-800 rounded-md">
+                        {localSettings.homeVideoUrl.includes('youtube') || localSettings.homeVideoUrl.includes('youtu.be') ? 'YouTube Embed' : 'Vídeo Direto / Upload'}
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-[9px] text-gray-400 font-medium">
+                      Permite vincular um vídeo em loop (MP4, WebM ou YouTube) que rodará em alta definição no fundo da tela inicial, login e checklist.
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -2004,6 +2719,15 @@ export const Settings: React.FC<SettingsProps> = ({
                    <div className="flex items-center gap-3">
                      <span className="text-[9px] font-black text-gray-400 uppercase hidden sm:block">Logado como: <span className="text-blue-600">{currentAuditUser}</span></span>
                      <button 
+                       onClick={() => {
+                         setIsAdminAuthenticated(false);
+                         setCurrentAuditUser(null);
+                       }}
+                       className="text-[9px] font-black uppercase text-red-600 flex items-center gap-1 hover:underline"
+                     >
+                       <LogOut className="w-3 h-3" /> Sair
+                     </button>
+                     <button 
                        onClick={async () => {
                          const targetUrl = localSettings.googleSheetUrl || FIXED_GOOGLE_SHEET_URL;
                          try {
@@ -2032,8 +2756,8 @@ export const Settings: React.FC<SettingsProps> = ({
                      >
                        <Activity className="w-3 h-3" /> Testar Conexão
                      </button>
-                     <button onClick={() => { fetchLogs(); fetchUsers(); }} className="text-[9px] font-black uppercase text-blue-600 flex items-center gap-1 hover:underline">
-                       <RefreshCw className={`w-3 h-3 ${(isLoadingLogs || isSavingUser)?'animate-spin':''}`} /> Sincronizar Tudo
+                     <button onClick={() => { if (onPerformFullSync) { onPerformFullSync(); } else { fetchLogs(); fetchUsers(); } }} className="text-[9px] font-black uppercase text-blue-600 flex items-center gap-1 hover:underline cursor-pointer">
+                       <RefreshCw className={`w-3 h-3 ${(isLoadingLogs || isSavingUser || isSyncing)?'animate-spin':''}`} /> Sincronizar Tudo
                      </button>
                    </div>
                 </div>
@@ -2184,8 +2908,14 @@ export const Settings: React.FC<SettingsProps> = ({
                                    <input type="text" placeholder="Ex: Auditor01" disabled={!!editingUserId} value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} className={`w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500 ${editingUserId ? 'bg-gray-100 text-gray-500' : 'bg-white'}`} />
                                 </div>
                                 <div className="space-y-1">
-                                   <label className="text-[9px] font-black text-gray-400 uppercase">Senha de Acesso</label>
-                                   <input type="password" placeholder="••••••••" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} className="w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500" />
+                                   <label className="text-[9px] font-black text-gray-400 uppercase">{editingUserId ? 'Nova Senha (opcional)' : 'Senha de Acesso'}</label>
+                                   <input 
+                                      type="password" 
+                                      placeholder={editingUserId ? "Deixe em branco p/ manter atual" : "••••••••"} 
+                                      value={newUser.password} 
+                                      onChange={e => setNewUser({...newUser, password: e.target.value})} 
+                                      className="w-full border rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500 bg-white" 
+                                   />
                                 </div>
                              </div>
                              <div className="space-y-1">
@@ -2209,11 +2939,39 @@ export const Settings: React.FC<SettingsProps> = ({
                                       <span className="text-[10px] font-black uppercase text-gray-600">Ajustes</span>
                                    </label>
                                    <label className="flex items-center gap-2 p-3 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                                      <input type="checkbox" checked={newUser.permissions?.manageStations || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, manageStations: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Postos</span>
+                                   </label>
+                                   <label className="flex items-center gap-2 p-3 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                                      <input type="checkbox" checked={newUser.permissions?.manageVehicles || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, manageVehicles: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Viaturas</span>
+                                   </label>
+                                   <label className="flex items-center gap-2 p-3 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
                                       <input type="checkbox" checked={newUser.permissions?.manageUsers || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, manageUsers: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                                       <span className="text-[10px] font-black uppercase text-gray-600">Gestão Usuários</span>
                                    </label>
-                                   <label className="flex items-center gap-2 p-3 border-2 border-red-100 bg-red-50 rounded-xl cursor-pointer hover:bg-red-100 transition-colors">
-                                      <input type="checkbox" checked={newUser.permissions?.admin} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, admin: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500" />
+                                   <label className="flex items-center gap-2 p-3 border rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                                      <input type="checkbox" checked={newUser.permissions?.manageItems || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, manageItems: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Gestão Itens</span>
+                                   </label>
+                                   <label className={`flex items-center gap-2 p-3 border rounded-xl transition-colors ${currentAuditUser?.toUpperCase() === 'CAVALIERI' ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                                      <input type="checkbox" disabled={currentAuditUser?.toUpperCase() !== 'CAVALIERI'} checked={newUser.permissions?.manageImages || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, manageImages: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Plantas</span>
+                                   </label>
+                                   <label className={`flex items-center gap-2 p-3 border rounded-xl transition-colors ${currentAuditUser?.toUpperCase() === 'CAVALIERI' ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                                      <input type="checkbox" disabled={currentAuditUser?.toUpperCase() !== 'CAVALIERI'} checked={newUser.permissions?.manageStyle || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, manageStyle: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Estilo</span>
+                                   </label>
+                                   <label className={`flex items-center gap-2 p-3 border rounded-xl transition-colors ${currentAuditUser?.toUpperCase() === 'CAVALIERI' ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                                      <input type="checkbox" disabled={currentAuditUser?.toUpperCase() !== 'CAVALIERI'} checked={newUser.permissions?.manageLogs || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, manageLogs: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Gestão Lançamento</span>
+                                   </label>
+                                   <label className={`flex items-center gap-2 p-3 border rounded-xl transition-colors ${currentAuditUser?.toUpperCase() === 'CAVALIERI' ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed opacity-60 bg-gray-50'}`}>
+                                      <input type="checkbox" disabled={currentAuditUser?.toUpperCase() !== 'CAVALIERI'} checked={newUser.permissions?.manageDatabase || false} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, manageDatabase: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                      <span className="text-[10px] font-black uppercase text-gray-600">Nuvem</span>
+                                   </label>
+                                   <label className={`flex items-center gap-2 p-3 border-2 border-red-100 bg-red-50 rounded-xl transition-colors ${currentAuditUser?.toUpperCase() === 'CAVALIERI' ? 'cursor-pointer hover:bg-red-100' : 'cursor-not-allowed opacity-60'}`}>
+                                      <input type="checkbox" disabled={currentAuditUser?.toUpperCase() !== 'CAVALIERI'} checked={newUser.permissions?.admin} onChange={e => setNewUser({...newUser, permissions: {...newUser.permissions!, admin: e.target.checked}})} className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500" />
                                       <span className="text-[10px] font-black uppercase text-red-600">Auditoria</span>
                                    </label>
                                 </div>
@@ -2258,11 +3016,33 @@ export const Settings: React.FC<SettingsProps> = ({
                                    </button>
                                 )}
                              </div>
-                                  <h4 className="text-xs font-black uppercase text-gray-800">Auditores Cadastrados</h4>
+                                 <div className="flex flex-col gap-3 mb-2">
+                                   <div className="flex items-center justify-between">
+                                      <h4 className="text-xs font-black uppercase text-gray-800">Auditores Cadastrados</h4>
+                                      <span className="text-[9px] font-bold text-gray-400 uppercase">{usersList.length} usuários</span>
+                                   </div>
+                                   <div className="relative">
+                                      <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                                      <input 
+                                         type="text" 
+                                         placeholder="PESQUISAR USUÁRIO OU RE..." 
+                                         value={searchTermUsers}
+                                         onChange={e => setSearchTermUsers(e.target.value.toUpperCase())}
+                                         className="w-full bg-gray-50 border-none rounded-xl pl-9 pr-4 py-2.5 text-[10px] font-black uppercase outline-none focus:ring-2 focus:ring-blue-100 transition-all"
+                                      />
+                                   </div>
+                                 </div>
                           </div>
                           <div className="flex-1 overflow-auto space-y-2">
                              {usersList.length === 0 && <div className="text-center py-10 text-[10px] text-gray-300 font-black uppercase">Nenhum auditor adicional.</div>}
-                             {usersList.map((u, i) => (
+                             {usersList
+                               .filter(u => 
+                                  !searchTermUsers || 
+                                  u.username?.toUpperCase().includes(searchTermUsers) || 
+                                  u.name?.toUpperCase().includes(searchTermUsers) ||
+                                  u.rank?.toUpperCase().includes(searchTermUsers)
+                               )
+                               .map((u, i) => (
                                u && u.username ? (
                                <div key={i} className="bg-white border p-3 rounded-2xl flex items-center justify-between shadow-sm group">
                                   <div className="flex items-center gap-3">
@@ -2493,13 +3273,27 @@ export const Settings: React.FC<SettingsProps> = ({
                       <div className="flex flex-col items-center justify-center p-8 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
                         <CloudOff className="w-10 h-10 text-gray-300 mb-3" />
                         <p className="text-[10px] font-black text-gray-400 uppercase mb-4 text-center">Login via API nativa</p>
-                        <button 
-                          onClick={onGoogleSignIn}
-                          className="flex items-center gap-2 px-6 py-3 bg-white border-2 border-gray-200 rounded-xl text-xs font-black uppercase hover:border-blue-500 hover:text-blue-600 transition-all active:scale-95"
-                        >
-                          <img src="https://www.google.com/favicon.ico" className="w-4 h-4" alt="" />
-                          Conectar Conta Google
-                        </button>
+                        <GoogleLoginButton 
+                          onSuccess={(profile, token) => {
+                            // No Settings.tsx, apenas salvamos a sessão e atualizamos o estado pai se necessário
+                            // Mas como as props do Settings já tem o googleUser atualizado pelo pai (App.tsx),
+                            // precisamos que o pai lide com o sucesso.
+                            // Para simplificar, vamos passar a prop onGoogleSignIn se ela for fornecida
+                            // Ou melhor, o Settings.tsx pode ter seu próprio estado local para o login se for apenas para Backup.
+                            // Mas o ideal é que o App.tsx gerencie o googleUser.
+                            
+                            // Vamos assumir que se o usuário clicar aqui, ele quer conectar.
+                            // Como o Settings não tem acesso direto aos setters do App, 
+                            // vamos usar uma prop de callback se necessário.
+                            
+                            // Na verdade, o App.tsx passa o handleGoogleLoginSuccess para o LoginModal.
+                            // Podemos passar o mesmo sucesso para cá.
+                            alert("Login realizado! Por favor, recarregue as configurações.");
+                            window.location.reload(); // Forma bruta de garantir que o App pegue o novo localStorage
+                          }}
+                          isLoggingIn={isSavingUser}
+                          setIsLoggingIn={() => {}}
+                        />
                       </div>
                     )}
                   </div>
@@ -2719,6 +3513,102 @@ export const Settings: React.FC<SettingsProps> = ({
           </div>
         )}
       </div>
+
+      {/* Modal de Alteração Rápida de Senha */}
+      {quickPasswordModalUser && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-gray-100 space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b">
+              <div className="flex items-center gap-2.5 text-blue-700">
+                <div className="p-2 bg-blue-50 rounded-xl">
+                  <Key className="w-5 h-5 text-blue-600" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black uppercase text-gray-900">Alteração Rápida de Senha</h3>
+                  <p className="text-[10px] font-bold text-gray-500">
+                    {quickPasswordModalUser.rank ? `${quickPasswordModalUser.rank} ` : ''}{quickPasswordModalUser.name || quickPasswordModalUser.username} (@{quickPasswordModalUser.username})
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setQuickPasswordModalUser(null)} 
+                className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl hover:bg-gray-100 transition-colors"
+                title="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-blue-50/80 border border-blue-100 rounded-2xl p-3 flex items-center gap-2.5 text-blue-800 text-[10px] font-bold">
+              <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0" />
+              <span>Por segurança, a senha atual nunca é exibida. Defina a nova credencial abaixo.</span>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Nova Senha</label>
+                <div className="relative">
+                  <input 
+                    type={showQuickNewPassword ? "text" : "password"}
+                    value={quickNewPassword}
+                    onChange={e => setQuickNewPassword(e.target.value)}
+                    placeholder="Digite a nova senha"
+                    className="w-full bg-gray-50 border rounded-2xl p-3.5 pr-10 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickNewPassword(!showQuickNewPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                    title={showQuickNewPassword ? "Ocultar senha" : "Ver senha digitada"}
+                  >
+                    {showQuickNewPassword ? <EyeOff className="w-4 h-4" /> : <ViewIcon className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-gray-500 uppercase ml-1">Confirmar Nova Senha</label>
+                <input 
+                  type={showQuickNewPassword ? "text" : "password"}
+                  value={quickConfirmPassword}
+                  onChange={e => setQuickConfirmPassword(e.target.value)}
+                  placeholder="Confirme a nova senha"
+                  className="w-full bg-gray-50 border rounded-2xl p-3.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer p-3 bg-gray-50 border rounded-2xl hover:bg-blue-50 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={quickForceChange} 
+                  onChange={e => setQuickForceChange(e.target.checked)} 
+                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" 
+                />
+                <span className="text-[10px] font-black uppercase text-gray-700">Exigir troca de senha no próximo login</span>
+              </label>
+            </div>
+
+            <div className="flex gap-2 pt-2 border-t">
+              <button 
+                type="button"
+                onClick={() => setQuickPasswordModalUser(null)}
+                className="flex-1 py-3 px-4 rounded-xl border border-gray-200 text-gray-600 font-black text-[10px] uppercase tracking-wider hover:bg-gray-50 transition-all"
+              >
+                Cancelar
+              </button>
+              <button 
+                type="button"
+                onClick={handleSaveQuickPassword}
+                className="flex-1 py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-[10px] uppercase tracking-wider shadow-lg shadow-blue-600/20 transition-all flex items-center justify-center gap-2"
+              >
+                <Save className="w-3.5 h-3.5" />
+                Salvar Nova Senha
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

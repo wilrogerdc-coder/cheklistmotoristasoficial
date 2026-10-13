@@ -86,6 +86,7 @@ export interface InspectionData {
 }
 
 export interface UserPermissions {
+  [key: string]: boolean | undefined;
   checklist: boolean;
   reports: boolean;
   settings: boolean;
@@ -105,6 +106,23 @@ export interface UserPermissions {
   manageDatabase?: boolean;
   viewAudit?: boolean;
   manageLogs?: boolean;
+  manageReportEditor?: boolean;
+  // Permissões granulares de relatórios
+  reportNovelties?: boolean;
+  reportSynthetic?: boolean;
+  reportAnalytical?: boolean;
+  reportFull?: boolean;
+  reportMonthlyGrouped?: boolean;
+  reportHistory?: boolean;
+  reportDailyControl?: boolean;
+  reportDailyControlMotos?: boolean;
+  reportWeeklyLeves?: boolean;
+  reportWeeklyMotos?: boolean;
+  reportWeeklyAb?: boolean;
+  reportRetroactiveLogs?: boolean;
+  reportFinalMonthlyBook?: boolean;
+  reportFleetDashboard?: boolean;
+  reportKmMonthly?: boolean;
 }
 
 export interface User {
@@ -115,6 +133,7 @@ export interface User {
   name: string;
   rank?: string;
   permissions: UserPermissions;
+  forcePasswordChange?: boolean;
 }
 
 export interface DocumentLink {
@@ -153,6 +172,9 @@ export interface AppSettings {
   appName?: string;
   appDescription?: string;
   developedBy?: string;
+  homeBgUrl?: string;
+  loginBgUrl?: string;
+  homeVideoUrl?: string;
 }
 
 export interface AuditLog {
@@ -195,4 +217,23 @@ export interface LogEntry {
   fullData?: string;    // JSON string completo da inspeção (para reimpressão fiel)
   generalObservation?: string;
   screenshot?: string;   // Base64 da imagem do checklist preenchido
+}
+
+export interface SyncProgressInfo {
+  isActive: boolean;
+  progress: number; // 0 to 100
+  title: string;
+  currentStep: string;
+  systemTime?: number; // seconds
+  dataTime?: number; // seconds
+  totalTime?: number; // seconds
+  status: 'idle' | 'syncing' | 'completed' | 'error';
+  errorMessage?: string;
+  timestamp?: string;
+  details?: {
+    vehiclesCount?: number;
+    stationsCount?: number;
+    usersCount?: number;
+    logsCount?: number;
+  };
 }
